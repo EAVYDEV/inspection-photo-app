@@ -241,6 +241,9 @@ function autoDeskewWithOpenCV() {
     let maxArea = 0;
     let bestQuad = null;
 
+    // Heuristic: full tag is tall; ignore "short" quads (like just the grid box)
+    const MIN_ASPECT_RATIO = 1.7; // height / width or width / height
+
     for (let i = 0; i < contours.size(); i++) {
       const cnt = contours.get(i);
       const peri = cv.arcLength(cnt, true);
@@ -248,6 +251,18 @@ function autoDeskewWithOpenCV() {
       cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
       if (approx.rows === 4) {
+        // Filter by aspect ratio of bounding box
+        const rect = cv.boundingRect(approx);
+        const w = rect.width;
+        const h = rect.height;
+        const aspect = Math.max(w, h) / Math.min(w, h);
+
+        if (aspect < MIN_ASPECT_RATIO) {
+          approx.delete();
+          cnt.delete();
+          continue; // looks too square, likely just the table, not the whole tag
+        }
+
         const area = cv.contourArea(approx, false);
         if (area > maxArea) {
           maxArea = area;
