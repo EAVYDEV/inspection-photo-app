@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Inspection Photo Archive - Phase 1</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Inspection Photo Archive</h1>
+      <p>Capture, straighten, and compress inspection photos for archival.</p>
+    </header>
+
+    <main>
+      <section class="camera-section">
+        <div class="video-container">
+          <video id="video" autoplay playsinline></video>
+        </div>
+        <div class="controls">
+          <button id="startCameraBtn">Start Camera</button>
+          <button id="captureBtn" disabled>Capture</button>
+          <button id="rotateBtn" disabled>Rotate 90°</button>
+          <button id="saveBtn" disabled>Save Photo</button>
+        </div>
+      </section>
+
+      <section class="preview-section">
+        <h2>Preview (Straightened &amp; Compressed)</h2>
+        <canvas id="canvas"></canvas>
+        <div id="status" class="status"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
