@@ -17,17 +17,36 @@
       </div>
     </header>
 
-    <!-- Capture view: camera + preview -->
+    <!-- Capture view: camera + preview + upload -->
     <div id="captureView">
       <main>
         <section class="camera-section">
           <div class="video-container portrait">
             <video id="video" autoplay playsinline></video>
           </div>
+
           <div class="controls">
             <button id="startCameraBtn">Start Camera</button>
             <button id="captureBtn" disabled>Capture</button>
             <button id="saveBtn" disabled>Save Photo</button>
+          </div>
+
+          <!-- Desktop drag & drop + mobile file picker -->
+          <div class="upload-options">
+            <div id="dropZone" class="drop-zone">
+              Drop an image here (desktop),<br />
+              or use the button below to pick from photos.
+            </div>
+
+            <input
+              type="file"
+              id="fileInput"
+              accept="image/*"
+              style="display: none"
+            />
+            <button id="choosePhotoBtn" class="secondary full-width">
+              Choose Photo from Device
+            </button>
           </div>
         </section>
 

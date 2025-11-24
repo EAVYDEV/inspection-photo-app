@@ -47,16 +47,16 @@ h1 {
   color: #fff;
 }
 
+/* Always vertical on this app to avoid overlap */
 main {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 16px;
 }
 
 .camera-section,
 .preview-section,
 .gallery-section {
-  flex: 1 1 320px;
   background: #fff;
   border-radius: 8px;
   padding: 12px;
@@ -70,6 +70,7 @@ main {
   background: #000;
   border-radius: 8px;
   overflow: hidden;
+  margin-bottom: 12px;
 }
 
 .video-container.portrait {
@@ -90,11 +91,11 @@ video {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
+  margin-bottom: 12px;
 }
 
 button {
-  flex: 1 1 calc(50% - 8px);
+  flex: 1 1 calc(33% - 8px);
   padding: 10px 12px;
   border-radius: 6px;
   border: none;
@@ -110,13 +111,40 @@ button[disabled] {
   cursor: not-allowed;
 }
 
-/* Secondary button style (e.g., Refresh) */
+/* Secondary / neutral buttons */
 button.secondary {
-  flex: 0 0 auto;
   background: #e0e4ea;
   color: #222;
 }
 
+/* Full-width variant */
+button.full-width {
+  flex: 1 1 100%;
+}
+
+/* Upload section */
+.upload-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drop-zone {
+  border: 2px dashed #b0b7c3;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+  font-size: 13px;
+  color: #555;
+  background: #f8fafc;
+}
+
+.drop-zone.drag-over {
+  border-color: #006495;
+  background: #e0f3ff;
+}
+
+/* Preview */
 .preview-section h2,
 .gallery-section h2 {
   margin-top: 0;
@@ -193,12 +221,8 @@ canvas {
   color: #666;
 }
 
-/* Mobile */
+/* Mobile tweaks */
 @media (max-width: 700px) {
-  main {
-    flex-direction: column;
-  }
-
   button {
     flex: 1 1 100%;
   }

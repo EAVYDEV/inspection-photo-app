@@ -13,7 +13,12 @@ const refreshGalleryBtn = document.getElementById("refreshGalleryBtn");
 const galleryStatusEl = document.getElementById("galleryStatus");
 const photoTableBody = document.getElementById("photoTableBody");
 
-// Hidden raw canvas to hold original frame
+// Upload controls
+const dropZone = document.getElementById("dropZone");
+const fileInput = document.getElementById("fileInput");
+const choosePhotoBtn = document.getElementById("choosePhotoBtn");
+
+// Hidden raw canvas to hold original frame / uploaded image
 const rawCanvas = document.createElement("canvas");
 const rawCtx = rawCanvas.getContext("2d");
 
@@ -30,7 +35,6 @@ function onOpenCvReady() {
   cvReady = true;
 }
 
-/* Expose to global so the onload attribute can find it */
 window.onOpenCvReady = onOpenCvReady;
 
 /* ---------- STATUS HELPERS ---------- */
@@ -93,7 +97,6 @@ function captureFrame() {
     return false;
   }
 
-  // Raw original frame
   rawCanvas.width = width;
   rawCanvas.height = height;
   rawCtx.drawImage(video, 0, 0, width, height);
@@ -101,28 +104,94 @@ function captureFrame() {
   hasCapture = true;
   saveBtn.disabled = false;
 
-  if (!cvReady) {
-    // Fallback: just copy to preview if OpenCV isn't ready yet
+  runDeskewOrFallback();
+  return true;
+}
+
+/* ---------- LOAD IMAGE FROM FILE (desktop & mobile) ---------- */
+
+function loadImageFile(file) {
+  if (!file || !file.type.startsWith("image/")) {
+    setStatus("Please select an image file.", "error");
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      rawCanvas.width = img.width;
+      rawCanvas.height = img.height;
+      rawCtx.drawImage(img, 0, 0);
+      hasCapture = true;
+      saveBtn.disabled = false;
+      runDeskewOrFallback();
+      setStatus("Image loaded from device and auto-straightened.", "success");
+    };
+    img.onerror = () => {
+      setStatus("Failed to load image.", "error");
+    };
+    img.src = reader.result;
+  };
+  reader.onerror = () => setStatus("Failed to read file.", "error");
+  reader.readAsDataURL(file);
+}
+
+/* Choose Photo button opens file input */
+choosePhotoBtn.addEventListener("click", () => {
+  fileInput.click();
+});
+
+fileInput.addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (file) {
+    loadImageFile(file);
+  }
+});
+
+/* Drag & drop handlers */
+dropZone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+  dropZone.classList.add("drag-over");
+});
+
+dropZone.addEventListener("dragleave", () => {
+  dropZone.classList.remove("drag-over");
+});
+
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("drag-over");
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    loadImageFile(file);
+  }
+});
+
+/* ---------- DESKEW / PREVIEW ---------- */
+
+function runDeskewOrFallback() {
+  if (!cvReady || !cv) {
     basicCopyToPreview();
     setStatus(
       "Captured. OpenCV not ready yet, showing uncorrected preview.",
       "error"
     );
-  } else {
-    try {
-      autoDeskewWithOpenCV();
-      setStatus("Captured and auto-straightened. Ready to save.", "success");
-    } catch (err) {
-      console.error("Deskew error:", err);
-      basicCopyToPreview();
-      setStatus(
-        "Captured, but auto-straighten failed. Saved uncorrected preview.",
-        "error"
-      );
-    }
+    return;
   }
 
-  return true;
+  try {
+    autoDeskewWithOpenCV();
+    setStatus("Captured and auto-straightened. Ready to save.", "success");
+  } catch (err) {
+    console.error("Deskew error:", err);
+    basicCopyToPreview();
+    setStatus(
+      "Captured, but auto-straighten failed. Showing uncorrected preview.",
+      "error"
+    );
+  }
 }
 
 /* Simple fallback: just scale raw image into preview canvas */
@@ -151,8 +220,7 @@ function autoDeskewWithOpenCV() {
     throw new Error("OpenCV not ready");
   }
 
-  // Read from rawCanvas
-  let src = cv.imread(rawCanvas); // RGBA
+  let src = cv.imread(rawCanvas);
   let gray = new cv.Mat();
   let blur = new cv.Mat();
   let edges = new cv.Mat();
@@ -160,17 +228,17 @@ function autoDeskewWithOpenCV() {
   let hierarchy = new cv.Mat();
 
   try {
-    // 1. Grayscale
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-
-    // 2. Blur to reduce noise
     cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-
-    // 3. Edge detection
     cv.Canny(blur, edges, 75, 200);
 
-    // 4. Find contours
-    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    cv.findContours(
+      edges,
+      contours,
+      hierarchy,
+      cv.RETR_LIST,
+      cv.CHAIN_APPROX_SIMPLE
+    );
 
     let maxArea = 0;
     let bestQuad = null;
@@ -181,11 +249,11 @@ function autoDeskewWithOpenCV() {
       const approx = new cv.Mat();
       cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
-      // We want quadrilaterals
       if (approx.rows === 4) {
         const area = cv.contourArea(approx, false);
         if (area > maxArea) {
           maxArea = area;
+          if (bestQuad) bestQuad.delete();
           bestQuad = approx;
         } else {
           approx.delete();
@@ -196,12 +264,10 @@ function autoDeskewWithOpenCV() {
       cnt.delete();
     }
 
-    if (!bestQuad || maxArea < (src.rows * src.cols) * 0.05) {
-      // Either no quad or too small relative to frame
+    if (!bestQuad || maxArea < src.rows * src.cols * 0.05) {
       throw new Error("No suitable quadrilateral found");
     }
 
-    // Convert quad points into JS array
     const pts = [];
     for (let i = 0; i < 4; i++) {
       pts.push({
@@ -210,10 +276,8 @@ function autoDeskewWithOpenCV() {
       });
     }
 
-    // Order points: top-left, top-right, bottom-right, bottom-left
     const ordered = orderQuadPoints(pts);
 
-    // Compute width/height of destination
     const widthTop = distance(ordered[0], ordered[1]);
     const widthBottom = distance(ordered[3], ordered[2]);
     const maxWidth = Math.max(widthTop, widthBottom);
@@ -222,7 +286,6 @@ function autoDeskewWithOpenCV() {
     const heightRight = distance(ordered[1], ordered[2]);
     const maxHeight = Math.max(heightLeft, heightRight);
 
-    // Optionally clamp to MAX_SIZE
     let destWidth = maxWidth;
     let destHeight = maxHeight;
     const longSide = Math.max(destWidth, destHeight);
@@ -236,30 +299,43 @@ function autoDeskewWithOpenCV() {
     destWidth = Math.round(destWidth);
     destHeight = Math.round(destHeight);
 
-    // Prepare source and destination matrices for perspective transform
     let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      ordered[0].x, ordered[0].y,
-      ordered[1].x, ordered[1].y,
-      ordered[2].x, ordered[2].y,
-      ordered[3].x, ordered[3].y
+      ordered[0].x,
+      ordered[0].y,
+      ordered[1].x,
+      ordered[1].y,
+      ordered[2].x,
+      ordered[2].y,
+      ordered[3].x,
+      ordered[3].y
     ]);
 
     let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0, 0,
-      destWidth - 1, 0,
-      destWidth - 1, destHeight - 1,
-      0, destHeight - 1
+      0,
+      0,
+      destWidth - 1,
+      0,
+      destWidth - 1,
+      destHeight - 1,
+      0,
+      destHeight - 1
     ]);
 
     let M = cv.getPerspectiveTransform(srcTri, dstTri);
     let warped = new cv.Mat();
     const dsize = new cv.Size(destWidth, destHeight);
-    cv.warpPerspective(src, warped, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+    cv.warpPerspective(
+      src,
+      warped,
+      M,
+      dsize,
+      cv.INTER_LINEAR,
+      cv.BORDER_CONSTANT,
+      new cv.Scalar()
+    );
 
-    // Draw warped image into preview canvas
     cv.imshow(canvas, warped);
 
-    // Cleanup
     warped.delete();
     srcTri.delete();
     dstTri.delete();
@@ -275,9 +351,7 @@ function autoDeskewWithOpenCV() {
   }
 }
 
-// Helper: order quad points TL, TR, BR, BL
 function orderQuadPoints(pts) {
-  // Sum and diff method
   const sum = pts.map((p) => p.x + p.y);
   const diff = pts.map((p) => p.y - p.x);
 
@@ -312,16 +386,14 @@ function canvasToBlob(canvasEl, type, quality) {
 
 async function savePhoto() {
   if (!hasCapture) {
-    setStatus("Capture a photo first.", "error");
+    setStatus("Capture or upload a photo first.", "error");
     return;
   }
 
   setStatus("Compressing and uploading photos...");
 
   try {
-    // Original: full quality from rawCanvas
     const originalBlob = await canvasToBlob(rawCanvas, "image/jpeg", 0.95);
-    // Corrected: warped + compressed from main canvas
     const correctedBlob = await canvasToBlob(canvas, "image/jpeg", 0.6);
 
     const formData = new FormData();
