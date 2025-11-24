@@ -5,15 +5,20 @@ const fs = require("fs");
 const multer = require("multer");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Base uploads folder
-const UPLOAD_BASE = path.join(__dirname, "uploads");
+// Detect when running on Vercel
+const isVercel = !!process.env.VERCEL;
+
+// Use /tmp on Vercel (writable but NOT permanent), local "uploads" when running on your Mac
+const UPLOAD_BASE = isVercel
+  ? path.join("/tmp", "uploads")
+  : path.join(__dirname, "uploads");
+
 const ARCHIVE_FOLDER = path.join(UPLOAD_BASE, "archive");
 
-// Ensure folders exist
+// Ensure folders exist (on Vercel this will create them under /tmp)
 if (!fs.existsSync(UPLOAD_BASE)) {
-  fs.mkdirSync(UPLOAD_BASE);
+  fs.mkdirSync(UPLOAD_BASE, { recursive: true });
 }
 if (!fs.existsSync(ARCHIVE_FOLDER)) {
   fs.mkdirSync(ARCHIVE_FOLDER, { recursive: true });
@@ -25,7 +30,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB max
 });
 
-// Serve static files
+// Serve static frontend from /public
 app.use(express.static(path.join(__dirname, "public")));
 
 // Upload endpoint (Phase 1: no QR logic, just archive)
@@ -45,7 +50,7 @@ app.post("/upload", upload.single("photo"), (req, res) => {
 
     res.json({
       message: "Photo archived successfully.",
-      folder: "archive",
+      folder: isVercel ? "/tmp/uploads/archive" : "uploads/archive",
       fileName
     });
   } catch (err) {
@@ -54,6 +59,14 @@ app.post("/upload", upload.single("photo"), (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
-});
+// For local development, start the server normally.
+// On Vercel (where process.env.VERCEL is set), we export the app instead
+// and LET VERCEL handle the serverless function wrapper.
+if (!isVercel) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`Local server listening on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
