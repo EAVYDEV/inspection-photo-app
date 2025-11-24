@@ -23,6 +23,12 @@
         <section class="camera-section">
           <div class="video-container portrait">
             <video id="video" autoplay playsinline></video>
+
+            <!-- NEW: tag alignment overlay -->
+            <div class="video-overlay">
+              <div class="tag-outline"></div>
+              <div class="tag-hint">Align tag inside outline before capturing</div>
+            </div>
           </div>
 
           <div class="controls">
@@ -84,9 +90,8 @@
     </div>
   </div>
 
-   <!-- OpenCV.js for automatic perspective correction -->
-   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
-   <script src="script.js"></script>
- </body>
- </html>
- 
+  <!-- OpenCV.js for automatic perspective correction -->
+  <script src="https://docs.opencv.org/4.x/opencv.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
