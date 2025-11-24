@@ -29,13 +29,15 @@ let cvReady = false;
 // Limit max size for compression (longest side)
 const MAX_SIZE = 1600;
 
-/* ----- OpenCV ready hook (called from index.html onload) ----- */
-function onOpenCvReady() {
-  console.log("OpenCV.js loaded");
-  cvReady = true;
-}
+/* ---------- OpenCV runtime hook ---------- */
 
-window.onOpenCvReady = onOpenCvReady;
+// opencv.js was loaded before this file, so cv should exist now.
+if (window.cv) {
+  cv["onRuntimeInitialized"] = () => {
+    cvReady = true;
+    console.log("OpenCV.js runtime initialized");
+  };
+}
 
 /* ---------- STATUS HELPERS ---------- */
 
@@ -126,7 +128,7 @@ function loadImageFile(file) {
       hasCapture = true;
       saveBtn.disabled = false;
       runDeskewOrFallback();
-      setStatus("Image loaded from device and auto-straightened.", "success");
+      setStatus("Image loaded from device and processed.", "success");
     };
     img.onerror = () => {
       setStatus("Failed to load image.", "error");
@@ -137,19 +139,13 @@ function loadImageFile(file) {
   reader.readAsDataURL(file);
 }
 
-/* Choose Photo button opens file input */
-choosePhotoBtn.addEventListener("click", () => {
-  fileInput.click();
-});
+choosePhotoBtn.addEventListener("click", () => fileInput.click());
 
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files[0];
-  if (file) {
-    loadImageFile(file);
-  }
+  if (file) loadImageFile(file);
 });
 
-/* Drag & drop handlers */
 dropZone.addEventListener("dragover", (e) => {
   e.preventDefault();
   e.dataTransfer.dropEffect = "copy";
@@ -164,18 +160,16 @@ dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
   dropZone.classList.remove("drag-over");
   const file = e.dataTransfer.files[0];
-  if (file) {
-    loadImageFile(file);
-  }
+  if (file) loadImageFile(file);
 });
 
 /* ---------- DESKEW / PREVIEW ---------- */
 
 function runDeskewOrFallback() {
-  if (!cvReady || !cv) {
+  if (!cvReady || !window.cv) {
     basicCopyToPreview();
     setStatus(
-      "Captured. OpenCV not ready yet, showing uncorrected preview.",
+      "Captured. OpenCV still initializing, showing uncorrected preview.",
       "error"
     );
     return;
@@ -183,7 +177,10 @@ function runDeskewOrFallback() {
 
   try {
     autoDeskewWithOpenCV();
-    setStatus("Captured and auto-straightened. Ready to save.", "success");
+    setStatus(
+      "Captured, perspective-corrected and converted to grayscale.",
+      "success"
+    );
   } catch (err) {
     console.error("Deskew error:", err);
     basicCopyToPreview();
@@ -213,10 +210,10 @@ function basicCopyToPreview() {
   ctx.drawImage(rawCanvas, 0, 0, destW, destH);
 }
 
-/* --- OpenCV-based automatic perspective correction --- */
+/* --- OpenCV-based automatic perspective correction & grayscale --- */
 
 function autoDeskewWithOpenCV() {
-  if (!cv || !cvReady) {
+  if (!cvReady || !window.cv) {
     throw new Error("OpenCV not ready");
   }
 
@@ -232,11 +229,12 @@ function autoDeskewWithOpenCV() {
     cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
     cv.Canny(blur, edges, 75, 200);
 
+    // Use external contours to avoid noise
     cv.findContours(
       edges,
       contours,
       hierarchy,
-      cv.RETR_LIST,
+      cv.RETR_EXTERNAL,
       cv.CHAIN_APPROX_SIMPLE
     );
 
@@ -270,10 +268,7 @@ function autoDeskewWithOpenCV() {
 
     const pts = [];
     for (let i = 0; i < 4; i++) {
-      pts.push({
-        x: bestQuad.intAt(i, 0),
-        y: bestQuad.intAt(i, 1)
-      });
+      pts.push({ x: bestQuad.intAt(i, 0), y: bestQuad.intAt(i, 1) });
     }
 
     const ordered = orderQuadPoints(pts);
@@ -292,8 +287,8 @@ function autoDeskewWithOpenCV() {
     let scale = 1;
     if (longSide > MAX_SIZE) {
       scale = MAX_SIZE / longSide;
-      destWidth = destWidth * scale;
-      destHeight = destHeight * scale;
+      destWidth *= scale;
+      destHeight *= scale;
     }
 
     destWidth = Math.round(destWidth);
@@ -334,9 +329,18 @@ function autoDeskewWithOpenCV() {
       new cv.Scalar()
     );
 
-    cv.imshow(canvas, warped);
+    // Convert warped image to grayscale
+    let warpedGray = new cv.Mat();
+    let warpedGrayRgba = new cv.Mat();
+    cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
+    cv.cvtColor(warpedGray, warpedGrayRgba, cv.COLOR_GRAY2RGBA, 0);
+
+    // Draw to preview canvas
+    cv.imshow(canvas, warpedGrayRgba);
 
     warped.delete();
+    warpedGray.delete();
+    warpedGrayRgba.delete();
     srcTri.delete();
     dstTri.delete();
     M.delete();
