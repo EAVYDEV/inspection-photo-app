@@ -10,7 +10,7 @@
   <div class="app">
     <header>
       <h1>Inspection Photo Archive</h1>
-      <p>Capture, straighten, and compress inspection photos for archival.</p>
+      <p>Capture, auto-straighten, and compress inspection photos for archival.</p>
       <div class="nav-tabs">
         <button id="navCapture" class="nav-tab active">Capture</button>
         <button id="navGallery" class="nav-tab">Gallery</button>
@@ -27,13 +27,12 @@
           <div class="controls">
             <button id="startCameraBtn">Start Camera</button>
             <button id="captureBtn" disabled>Capture</button>
-            <button id="rotateBtn" disabled>Rotate 90°</button>
             <button id="saveBtn" disabled>Save Photo</button>
           </div>
         </section>
 
         <section class="preview-section">
-          <h2>Preview (Straightened &amp; Compressed)</h2>
+          <h2>Preview (Auto-Straightened &amp; Compressed)</h2>
           <canvas id="canvas"></canvas>
           <div id="status" class="status"></div>
         </section>
@@ -65,6 +64,13 @@
       </section>
     </div>
   </div>
+
+  <!-- OpenCV.js for automatic perspective correction -->
+  <script
+    src="https://docs.opencv.org/4.x/opencv.js"
+    onload="onOpenCvReady()"
+    onerror="console.error('Failed to load OpenCV.js');"
+  ></script>
 
   <script src="script.js"></script>
 </body>

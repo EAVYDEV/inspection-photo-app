@@ -1,6 +1,5 @@
 const startCameraBtn = document.getElementById("startCameraBtn");
 const captureBtn = document.getElementById("captureBtn");
-const rotateBtn = document.getElementById("rotateBtn");
 const saveBtn = document.getElementById("saveBtn");
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
@@ -19,11 +18,22 @@ const rawCanvas = document.createElement("canvas");
 const rawCtx = rawCanvas.getContext("2d");
 
 let stream = null;
-let rotation = 0;
 let hasCapture = false;
+let cvReady = false;
 
 // Limit max size for compression (longest side)
 const MAX_SIZE = 1600;
+
+/* ----- OpenCV ready hook (called from index.html onload) ----- */
+function onOpenCvReady() {
+  console.log("OpenCV.js loaded");
+  cvReady = true;
+}
+
+/* Expose to global so the onload attribute can find it */
+window.onOpenCvReady = onOpenCvReady;
+
+/* ---------- STATUS HELPERS ---------- */
 
 function setStatus(message, type = "") {
   statusEl.textContent = message;
@@ -88,53 +98,204 @@ function captureFrame() {
   rawCanvas.height = height;
   rawCtx.drawImage(video, 0, 0, width, height);
 
-  rotation = 0;
   hasCapture = true;
-
-  applyTransformAndResize();
-  rotateBtn.disabled = false;
   saveBtn.disabled = false;
 
-  setStatus("Photo captured. Rotate if needed, then Save.", "success");
+  if (!cvReady) {
+    // Fallback: just copy to preview if OpenCV isn't ready yet
+    basicCopyToPreview();
+    setStatus(
+      "Captured. OpenCV not ready yet, showing uncorrected preview.",
+      "error"
+    );
+  } else {
+    try {
+      autoDeskewWithOpenCV();
+      setStatus("Captured and auto-straightened. Ready to save.", "success");
+    } catch (err) {
+      console.error("Deskew error:", err);
+      basicCopyToPreview();
+      setStatus(
+        "Captured, but auto-straighten failed. Saved uncorrected preview.",
+        "error"
+      );
+    }
+  }
+
   return true;
 }
 
-function applyTransformAndResize() {
-  if (!hasCapture) return;
-
+/* Simple fallback: just scale raw image into preview canvas */
+function basicCopyToPreview() {
   const srcW = rawCanvas.width;
   const srcH = rawCanvas.height;
-
-  const rotatedIsPortrait = rotation === 90 || rotation === 270;
-  const baseWidth = rotatedIsPortrait ? srcH : srcW;
-  const baseHeight = rotatedIsPortrait ? srcW : srcH;
-
   let scale = 1;
-  const longSide = Math.max(baseWidth, baseHeight);
+  const longSide = Math.max(srcW, srcH);
   if (longSide > MAX_SIZE) {
     scale = MAX_SIZE / longSide;
   }
-
-  const destW = Math.round(baseWidth * scale);
-  const destH = Math.round(baseHeight * scale);
+  const destW = Math.round(srcW * scale);
+  const destH = Math.round(srcH * scale);
 
   canvas.width = destW;
   canvas.height = destH;
   const ctx = canvas.getContext("2d");
-
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, destW, destH);
-
-  ctx.translate(destW / 2, destH / 2);
-  ctx.rotate((rotation * Math.PI) / 180);
-
-  const drawW = srcW * scale;
-  const drawH = srcH * scale;
-  ctx.drawImage(rawCanvas, -drawW / 2, -drawH / 2, drawW, drawH);
-
-  ctx.restore();
+  ctx.drawImage(rawCanvas, 0, 0, destW, destH);
 }
+
+/* --- OpenCV-based automatic perspective correction --- */
+
+function autoDeskewWithOpenCV() {
+  if (!cv || !cvReady) {
+    throw new Error("OpenCV not ready");
+  }
+
+  // Read from rawCanvas
+  let src = cv.imread(rawCanvas); // RGBA
+  let gray = new cv.Mat();
+  let blur = new cv.Mat();
+  let edges = new cv.Mat();
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+
+  try {
+    // 1. Grayscale
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+    // 2. Blur to reduce noise
+    cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+
+    // 3. Edge detection
+    cv.Canny(blur, edges, 75, 200);
+
+    // 4. Find contours
+    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+    let maxArea = 0;
+    let bestQuad = null;
+
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt = contours.get(i);
+      const peri = cv.arcLength(cnt, true);
+      const approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+      // We want quadrilaterals
+      if (approx.rows === 4) {
+        const area = cv.contourArea(approx, false);
+        if (area > maxArea) {
+          maxArea = area;
+          bestQuad = approx;
+        } else {
+          approx.delete();
+        }
+      } else {
+        approx.delete();
+      }
+      cnt.delete();
+    }
+
+    if (!bestQuad || maxArea < (src.rows * src.cols) * 0.05) {
+      // Either no quad or too small relative to frame
+      throw new Error("No suitable quadrilateral found");
+    }
+
+    // Convert quad points into JS array
+    const pts = [];
+    for (let i = 0; i < 4; i++) {
+      pts.push({
+        x: bestQuad.intAt(i, 0),
+        y: bestQuad.intAt(i, 1)
+      });
+    }
+
+    // Order points: top-left, top-right, bottom-right, bottom-left
+    const ordered = orderQuadPoints(pts);
+
+    // Compute width/height of destination
+    const widthTop = distance(ordered[0], ordered[1]);
+    const widthBottom = distance(ordered[3], ordered[2]);
+    const maxWidth = Math.max(widthTop, widthBottom);
+
+    const heightLeft = distance(ordered[0], ordered[3]);
+    const heightRight = distance(ordered[1], ordered[2]);
+    const maxHeight = Math.max(heightLeft, heightRight);
+
+    // Optionally clamp to MAX_SIZE
+    let destWidth = maxWidth;
+    let destHeight = maxHeight;
+    const longSide = Math.max(destWidth, destHeight);
+    let scale = 1;
+    if (longSide > MAX_SIZE) {
+      scale = MAX_SIZE / longSide;
+      destWidth = destWidth * scale;
+      destHeight = destHeight * scale;
+    }
+
+    destWidth = Math.round(destWidth);
+    destHeight = Math.round(destHeight);
+
+    // Prepare source and destination matrices for perspective transform
+    let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      ordered[0].x, ordered[0].y,
+      ordered[1].x, ordered[1].y,
+      ordered[2].x, ordered[2].y,
+      ordered[3].x, ordered[3].y
+    ]);
+
+    let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0,
+      destWidth - 1, 0,
+      destWidth - 1, destHeight - 1,
+      0, destHeight - 1
+    ]);
+
+    let M = cv.getPerspectiveTransform(srcTri, dstTri);
+    let warped = new cv.Mat();
+    const dsize = new cv.Size(destWidth, destHeight);
+    cv.warpPerspective(src, warped, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+    // Draw warped image into preview canvas
+    cv.imshow(canvas, warped);
+
+    // Cleanup
+    warped.delete();
+    srcTri.delete();
+    dstTri.delete();
+    M.delete();
+    bestQuad.delete();
+  } finally {
+    src.delete();
+    gray.delete();
+    blur.delete();
+    edges.delete();
+    contours.delete();
+    hierarchy.delete();
+  }
+}
+
+// Helper: order quad points TL, TR, BR, BL
+function orderQuadPoints(pts) {
+  // Sum and diff method
+  const sum = pts.map((p) => p.x + p.y);
+  const diff = pts.map((p) => p.y - p.x);
+
+  const tl = pts[sum.indexOf(Math.min(...sum))];
+  const br = pts[sum.indexOf(Math.max(...sum))];
+  const tr = pts[diff.indexOf(Math.min(...diff))];
+  const bl = pts[diff.indexOf(Math.max(...diff))];
+
+  return [tl, tr, br, bl];
+}
+
+function distance(p1, p2) {
+  const dx = p1.x - p2.x;
+  const dy = p1.y - p2.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/* ---------- SAVE / UPLOAD ---------- */
 
 function canvasToBlob(canvasEl, type, quality) {
   return new Promise((resolve, reject) => {
@@ -160,7 +321,7 @@ async function savePhoto() {
   try {
     // Original: full quality from rawCanvas
     const originalBlob = await canvasToBlob(rawCanvas, "image/jpeg", 0.95);
-    // Corrected: rotated + compressed from main canvas
+    // Corrected: warped + compressed from main canvas
     const correctedBlob = await canvasToBlob(canvas, "image/jpeg", 0.6);
 
     const formData = new FormData();
@@ -193,26 +354,6 @@ async function savePhoto() {
     setStatus("Upload error: " + err.message, "error");
   }
 }
-
-startCameraBtn.addEventListener("click", () => {
-  setStatus("Starting camera...");
-  startCamera();
-});
-
-captureBtn.addEventListener("click", () => {
-  captureFrame();
-});
-
-rotateBtn.addEventListener("click", () => {
-  if (!hasCapture) return;
-  rotation = (rotation + 90) % 360;
-  applyTransformAndResize();
-  setStatus(`Rotated to ${rotation}°.`, "success");
-});
-
-saveBtn.addEventListener("click", () => {
-  savePhoto();
-});
 
 /* ---------- GALLERY ---------- */
 
@@ -283,6 +424,21 @@ async function loadGallery() {
     setGalleryStatus("Error loading gallery: " + err.message, "error");
   }
 }
+
+/* ---------- EVENT WIRING ---------- */
+
+startCameraBtn.addEventListener("click", () => {
+  setStatus("Starting camera...");
+  startCamera();
+});
+
+captureBtn.addEventListener("click", () => {
+  captureFrame();
+});
+
+saveBtn.addEventListener("click", () => {
+  savePhoto();
+});
 
 refreshGalleryBtn.addEventListener("click", loadGallery);
 
