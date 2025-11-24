@@ -31,9 +31,9 @@ const MAX_SIZE = 1600;
 
 /* ---------- OpenCV runtime hook ---------- */
 
-// opencv.js was loaded before this file, so cv should exist now.
+// opencv.js is loaded before this file, so cv should exist now.
 if (window.cv) {
-  cv["onRuntimeInitialized"] = () => {
+  cv.onRuntimeInitialized = () => {
     cvReady = true;
     console.log("OpenCV.js runtime initialized");
   };
@@ -219,19 +219,28 @@ function autoDeskewWithOpenCV() {
 
   let src = cv.imread(rawCanvas);
   let gray = new cv.Mat();
-  let blur = new cv.Mat();
-  let edges = new cv.Mat();
+  let thresh = new cv.Mat();
   let contours = new cv.MatVector();
   let hierarchy = new cv.Mat();
 
   try {
+    // 1. Grayscale
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-    cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-    cv.Canny(blur, edges, 75, 200);
 
-    // Use external contours to avoid noise
+    // 2. Adaptive threshold to get a strong outline of the tag
+    cv.adaptiveThreshold(
+      gray,
+      thresh,
+      255,
+      cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+      cv.THRESH_BINARY_INV,
+      15,
+      10
+    );
+
+    // 3. External contours only (ignore inner lines)
     cv.findContours(
-      edges,
+      thresh,
       contours,
       hierarchy,
       cv.RETR_EXTERNAL,
@@ -241,9 +250,6 @@ function autoDeskewWithOpenCV() {
     let maxArea = 0;
     let bestQuad = null;
 
-    // Heuristic: full tag is tall; ignore "short" quads (like just the grid box)
-    const MIN_ASPECT_RATIO = 1.7; // height / width or width / height
-
     for (let i = 0; i < contours.size(); i++) {
       const cnt = contours.get(i);
       const peri = cv.arcLength(cnt, true);
@@ -251,20 +257,9 @@ function autoDeskewWithOpenCV() {
       cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
       if (approx.rows === 4) {
-        // Filter by aspect ratio of bounding box
-        const rect = cv.boundingRect(approx);
-        const w = rect.width;
-        const h = rect.height;
-        const aspect = Math.max(w, h) / Math.min(w, h);
-
-        if (aspect < MIN_ASPECT_RATIO) {
-          approx.delete();
-          cnt.delete();
-          continue; // looks too square, likely just the table, not the whole tag
-        }
-
         const area = cv.contourArea(approx, false);
-        if (area > maxArea) {
+        // ignore tiny contours
+        if (area > maxArea && area > src.rows * src.cols * 0.05) {
           maxArea = area;
           if (bestQuad) bestQuad.delete();
           bestQuad = approx;
@@ -277,15 +272,15 @@ function autoDeskewWithOpenCV() {
       cnt.delete();
     }
 
-    if (!bestQuad || maxArea < src.rows * src.cols * 0.05) {
+    if (!bestQuad) {
       throw new Error("No suitable quadrilateral found");
     }
 
+    // 4. Order the quad points: TL, TR, BR, BL
     const pts = [];
     for (let i = 0; i < 4; i++) {
       pts.push({ x: bestQuad.intAt(i, 0), y: bestQuad.intAt(i, 1) });
     }
-
     const ordered = orderQuadPoints(pts);
 
     const widthTop = distance(ordered[0], ordered[1]);
@@ -344,13 +339,14 @@ function autoDeskewWithOpenCV() {
       new cv.Scalar()
     );
 
-    // Convert warped image to grayscale
+    // 5. Convert warped image to grayscale and display
     let warpedGray = new cv.Mat();
     let warpedGrayRgba = new cv.Mat();
     cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
     cv.cvtColor(warpedGray, warpedGrayRgba, cv.COLOR_GRAY2RGBA, 0);
 
-    // Draw to preview canvas
+    canvas.width = destWidth;
+    canvas.height = destHeight;
     cv.imshow(canvas, warpedGrayRgba);
 
     warped.delete();
@@ -363,8 +359,7 @@ function autoDeskewWithOpenCV() {
   } finally {
     src.delete();
     gray.delete();
-    blur.delete();
-    edges.delete();
+    thresh.delete();
     contours.delete();
     hierarchy.delete();
   }
