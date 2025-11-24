@@ -227,7 +227,7 @@ function autoDeskewWithOpenCV() {
     // 1. Grayscale
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
-    // 2. Adaptive threshold to get a strong outline of the tag
+    // 2. Adaptive threshold to highlight tag edges
     cv.adaptiveThreshold(
       gray,
       thresh,
@@ -238,7 +238,7 @@ function autoDeskewWithOpenCV() {
       10
     );
 
-    // 3. External contours only (ignore inner lines)
+    // 3. External contours only
     cv.findContours(
       thresh,
       contours,
@@ -250,6 +250,9 @@ function autoDeskewWithOpenCV() {
     let maxArea = 0;
     let bestQuad = null;
 
+    // Heuristic: the tag is a tall rectangle, not a square.
+    const MIN_ASPECT = 1.5; // height/width (or width/height) must be at least this
+
     for (let i = 0; i < contours.size(); i++) {
       const cnt = contours.get(i);
       const peri = cv.arcLength(cnt, true);
@@ -257,8 +260,19 @@ function autoDeskewWithOpenCV() {
       cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
       if (approx.rows === 4) {
+        const rect = cv.boundingRect(approx);
+        const w = rect.width;
+        const h = rect.height;
+        const aspect = Math.max(w, h) / Math.min(w, h);
+
+        // filter out more-square shapes (like the inner grid)
+        if (aspect < MIN_ASPECT) {
+          approx.delete();
+          cnt.delete();
+          continue;
+        }
+
         const area = cv.contourArea(approx, false);
-        // ignore tiny contours
         if (area > maxArea && area > src.rows * src.cols * 0.05) {
           maxArea = area;
           if (bestQuad) bestQuad.delete();
@@ -273,10 +287,10 @@ function autoDeskewWithOpenCV() {
     }
 
     if (!bestQuad) {
-      throw new Error("No suitable quadrilateral found");
+      throw new Error("No suitable tall quadrilateral found");
     }
 
-    // 4. Order the quad points: TL, TR, BR, BL
+    // 4. Order quad points: TL, TR, BR, BL
     const pts = [];
     for (let i = 0; i < 4; i++) {
       pts.push({ x: bestQuad.intAt(i, 0), y: bestQuad.intAt(i, 1) });
