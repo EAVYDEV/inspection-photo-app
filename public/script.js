@@ -6,6 +6,15 @@ const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const statusEl = document.getElementById("status");
 
+const navCapture = document.getElementById("navCapture");
+const navGallery = document.getElementById("navGallery");
+const captureView = document.getElementById("captureView");
+const galleryView = document.getElementById("galleryView");
+const refreshGalleryBtn = document.getElementById("refreshGalleryBtn");
+const galleryStatusEl = document.getElementById("galleryStatus");
+const photoTableBody = document.getElementById("photoTableBody");
+
+// Hidden raw canvas to hold original frame
 const rawCanvas = document.createElement("canvas");
 const rawCtx = rawCanvas.getContext("2d");
 
@@ -13,6 +22,7 @@ let stream = null;
 let rotation = 0;
 let hasCapture = false;
 
+// Limit max size for compression (longest side)
 const MAX_SIZE = 1600;
 
 function setStatus(message, type = "") {
@@ -20,6 +30,34 @@ function setStatus(message, type = "") {
   statusEl.className = "status";
   if (type) statusEl.classList.add(type);
 }
+
+function setGalleryStatus(message, type = "") {
+  galleryStatusEl.textContent = message;
+  galleryStatusEl.className = "status";
+  if (type) galleryStatusEl.classList.add(type);
+}
+
+/* ---------- NAV TABS ---------- */
+
+function showCaptureView() {
+  navCapture.classList.add("active");
+  navGallery.classList.remove("active");
+  captureView.style.display = "";
+  galleryView.style.display = "none";
+}
+
+function showGalleryView() {
+  navCapture.classList.remove("active");
+  navGallery.classList.add("active");
+  captureView.style.display = "none";
+  galleryView.style.display = "";
+  loadGallery();
+}
+
+navCapture.addEventListener("click", showCaptureView);
+navGallery.addEventListener("click", showGalleryView);
+
+/* ---------- CAMERA / CAPTURE ---------- */
 
 async function startCamera() {
   try {
@@ -45,6 +83,7 @@ function captureFrame() {
     return false;
   }
 
+  // Raw original frame
   rawCanvas.width = width;
   rawCanvas.height = height;
   rawCtx.drawImage(video, 0, 0, width, height);
@@ -97,52 +136,62 @@ function applyTransformAndResize() {
   ctx.restore();
 }
 
+function canvasToBlob(canvasEl, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvasEl.toBlob(
+      (blob) => {
+        if (!blob) return reject(new Error("Failed to create blob."));
+        resolve(blob);
+      },
+      type,
+      quality
+    );
+  });
+}
+
 async function savePhoto() {
   if (!hasCapture) {
     setStatus("Capture a photo first.", "error");
     return;
   }
 
-  setStatus("Compressing and uploading photo...");
+  setStatus("Compressing and uploading photos...");
 
-  canvas.toBlob(
-    async (blob) => {
-      if (!blob) {
-        setStatus("Failed to prepare image for upload.", "error");
-        return;
-      }
+  try {
+    // Original: full quality from rawCanvas
+    const originalBlob = await canvasToBlob(rawCanvas, "image/jpeg", 0.95);
+    // Corrected: rotated + compressed from main canvas
+    const correctedBlob = await canvasToBlob(canvas, "image/jpeg", 0.6);
 
-      const formData = new FormData();
-      formData.append("photo", blob, "inspection.jpg");
+    const formData = new FormData();
+    formData.append("original", originalBlob, "original.jpg");
+    formData.append("corrected", correctedBlob, "corrected.jpg");
 
-      try {
-        const res = await fetch("/upload", {
-          method: "POST",
-          body: formData
-        });
+    const res = await fetch("/upload", {
+      method: "POST",
+      body: formData
+    });
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          setStatus(
-            "Upload failed: " + (errData.error || res.statusText),
-            "error"
-          );
-          return;
-        }
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      setStatus(
+        "Upload failed: " + (errData.error || res.statusText),
+        "error"
+      );
+      return;
+    }
 
-        const data = await res.json();
-        setStatus(
-          `Photo archived as ${data.fileName} in folder "${data.folder}".`,
-          "success"
-        );
-      } catch (err) {
-        console.error(err);
-        setStatus("Upload error: " + err.message, "error");
-      }
-    },
-    "image/jpeg",
-    0.6
-  );
+    const data = await res.json();
+    setStatus(
+      `Saved pair: original ${formatBytes(
+        data.originalSize
+      )}, corrected ${formatBytes(data.correctedSize)}.`,
+      "success"
+    );
+  } catch (err) {
+    console.error(err);
+    setStatus("Upload error: " + err.message, "error");
+  }
 }
 
 startCameraBtn.addEventListener("click", () => {
@@ -164,3 +213,78 @@ rotateBtn.addEventListener("click", () => {
 saveBtn.addEventListener("click", () => {
   savePhoto();
 });
+
+/* ---------- GALLERY ---------- */
+
+function formatBytes(bytes) {
+  if (!bytes && bytes !== 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let value = bytes;
+  while (value >= 1024 && i < units.length - 1) {
+    value = value / 1024;
+    i++;
+  }
+  return `${value.toFixed(1)} ${units[i]}`;
+}
+
+async function loadGallery() {
+  setGalleryStatus("Loading photos...");
+  photoTableBody.innerHTML = "";
+
+  try {
+    const res = await fetch("/photos");
+    if (!res.ok) {
+      setGalleryStatus("Failed to load photos.", "error");
+      return;
+    }
+
+    const items = await res.json();
+    if (!items.length) {
+      setGalleryStatus("No photos archived yet.", "success");
+      return;
+    }
+
+    for (const item of items) {
+      const tr = document.createElement("tr");
+
+      const idTd = document.createElement("td");
+      idTd.textContent = item.id;
+      tr.appendChild(idTd);
+
+      const originalTd = document.createElement("td");
+      const origImg = document.createElement("img");
+      origImg.src = item.originalUrl;
+      origImg.alt = `Original ${item.id}`;
+      const origSize = document.createElement("div");
+      origSize.className = "size-text";
+      origSize.textContent = formatBytes(item.originalSize);
+      originalTd.appendChild(origImg);
+      originalTd.appendChild(origSize);
+      tr.appendChild(originalTd);
+
+      const correctedTd = document.createElement("td");
+      const corrImg = document.createElement("img");
+      corrImg.src = item.correctedUrl;
+      corrImg.alt = `Corrected ${item.id}`;
+      const corrSize = document.createElement("div");
+      corrSize.className = "size-text";
+      corrSize.textContent = formatBytes(item.correctedSize);
+      correctedTd.appendChild(corrImg);
+      correctedTd.appendChild(corrSize);
+      tr.appendChild(correctedTd);
+
+      photoTableBody.appendChild(tr);
+    }
+
+    setGalleryStatus(`Loaded ${items.length} photo set(s).`, "success");
+  } catch (err) {
+    console.error(err);
+    setGalleryStatus("Error loading gallery: " + err.message, "error");
+  }
+}
+
+refreshGalleryBtn.addEventListener("click", loadGallery);
+
+// Default to Capture tab on load
+showCaptureView();

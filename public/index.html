@@ -11,27 +11,59 @@
     <header>
       <h1>Inspection Photo Archive</h1>
       <p>Capture, straighten, and compress inspection photos for archival.</p>
+      <div class="nav-tabs">
+        <button id="navCapture" class="nav-tab active">Capture</button>
+        <button id="navGallery" class="nav-tab">Gallery</button>
+      </div>
     </header>
 
-    <main>
-      <section class="camera-section">
-        <div class="video-container">
-          <video id="video" autoplay playsinline></video>
-        </div>
-        <div class="controls">
-          <button id="startCameraBtn">Start Camera</button>
-          <button id="captureBtn" disabled>Capture</button>
-          <button id="rotateBtn" disabled>Rotate 90°</button>
-          <button id="saveBtn" disabled>Save Photo</button>
-        </div>
-      </section>
+    <!-- Capture view: camera + preview -->
+    <div id="captureView">
+      <main>
+        <section class="camera-section">
+          <div class="video-container portrait">
+            <video id="video" autoplay playsinline></video>
+          </div>
+          <div class="controls">
+            <button id="startCameraBtn">Start Camera</button>
+            <button id="captureBtn" disabled>Capture</button>
+            <button id="rotateBtn" disabled>Rotate 90°</button>
+            <button id="saveBtn" disabled>Save Photo</button>
+          </div>
+        </section>
 
-      <section class="preview-section">
-        <h2>Preview (Straightened &amp; Compressed)</h2>
-        <canvas id="canvas"></canvas>
-        <div id="status" class="status"></div>
+        <section class="preview-section">
+          <h2>Preview (Straightened &amp; Compressed)</h2>
+          <canvas id="canvas"></canvas>
+          <div id="status" class="status"></div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Gallery view: list all photos -->
+    <div id="galleryView" style="display: none;">
+      <section class="gallery-section">
+        <div class="gallery-header">
+          <h2>Photo Archive</h2>
+          <button id="refreshGalleryBtn" class="secondary">Refresh</button>
+        </div>
+        <div class="table-wrapper">
+          <table class="photo-table">
+            <thead>
+              <tr>
+                <th>Capture ID</th>
+                <th>Original Photo<br /><span class="subtext">+ size</span></th>
+                <th>Corrected Photo<br /><span class="subtext">+ size</span></th>
+              </tr>
+            </thead>
+            <tbody id="photoTableBody">
+              <!-- Filled by script.js -->
+            </tbody>
+          </table>
+        </div>
+        <div id="galleryStatus" class="status"></div>
       </section>
-    </main>
+    </div>
   </div>
 
   <script src="script.js"></script>

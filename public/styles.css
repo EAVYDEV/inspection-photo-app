@@ -10,7 +10,7 @@ body {
 }
 
 .app {
-  max-width: 960px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 16px;
 }
@@ -24,6 +24,29 @@ h1 {
   margin: 0 0 8px;
 }
 
+/* Nav tabs */
+.nav-tabs {
+  margin-top: 8px;
+  display: inline-flex;
+  border-radius: 999px;
+  background: #e0e4ea;
+  padding: 4px;
+}
+
+.nav-tab {
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.nav-tab.active {
+  background: #006495;
+  color: #fff;
+}
+
 main {
   display: flex;
   flex-wrap: wrap;
@@ -31,7 +54,8 @@ main {
 }
 
 .camera-section,
-.preview-section {
+.preview-section,
+.gallery-section {
   flex: 1 1 320px;
   background: #fff;
   border-radius: 8px;
@@ -39,13 +63,18 @@ main {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
+/* Portrait video container */
 .video-container {
   position: relative;
   width: 100%;
-  padding-top: 56.25%;
   background: #000;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.video-container.portrait {
+  /* roughly 3:4 portrait ratio */
+  padding-top: 133%;
 }
 
 video {
@@ -53,7 +82,8 @@ video {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #000;
 }
 
 .controls {
@@ -80,13 +110,21 @@ button[disabled] {
   cursor: not-allowed;
 }
 
-.preview-section h2 {
+/* Secondary button style (e.g., Refresh) */
+button.secondary {
+  flex: 0 0 auto;
+  background: #e0e4ea;
+  color: #222;
+}
+
+.preview-section h2,
+.gallery-section h2 {
   margin-top: 0;
 }
 
 canvas {
   width: 100%;
-  max-height: 340px;
+  max-height: 480px;
   background: #eee;
   border-radius: 8px;
 }
@@ -104,12 +142,68 @@ canvas {
   color: #1e8449;
 }
 
-@media (max-width: 600px) {
+/* Gallery table */
+.gallery-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.photo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.photo-table th,
+.photo-table td {
+  border-bottom: 1px solid #e0e0e0;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.photo-table th {
+  background: #f0f2f5;
+  font-weight: 600;
+}
+
+.photo-table img {
+  max-width: 140px;
+  max-height: 200px;
+  display: block;
+  border-radius: 4px;
+  border: 1px solid #ddd;
+}
+
+.subtext {
+  font-size: 11px;
+  color: #666;
+}
+
+.size-text {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #666;
+}
+
+/* Mobile */
+@media (max-width: 700px) {
   main {
     flex-direction: column;
   }
 
   button {
     flex: 1 1 100%;
+  }
+
+  .photo-table img {
+    max-width: 100px;
   }
 }

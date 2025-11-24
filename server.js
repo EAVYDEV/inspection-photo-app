@@ -16,7 +16,7 @@ const UPLOAD_BASE = isVercel
 
 const ARCHIVE_FOLDER = path.join(UPLOAD_BASE, "archive");
 
-// Ensure folders exist (on Vercel this will create them under /tmp)
+// Ensure folders exist
 if (!fs.existsSync(UPLOAD_BASE)) {
   fs.mkdirSync(UPLOAD_BASE, { recursive: true });
 }
@@ -24,44 +24,124 @@ if (!fs.existsSync(ARCHIVE_FOLDER)) {
   fs.mkdirSync(ARCHIVE_FOLDER, { recursive: true });
 }
 
-// Multer in-memory storage; we write the file ourselves
+// Multer in-memory storage; we write the files ourselves
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB max
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB max per file
 });
 
-// Serve static frontend from /public
+// Serve static frontend
 app.use(express.static(path.join(__dirname, "public")));
 
-// Upload endpoint (Phase 1: no QR logic, just archive)
-app.post("/upload", upload.single("photo"), (req, res) => {
+// Serve archived files so the gallery can display them
+app.use("/files", express.static(ARCHIVE_FOLDER));
+
+/**
+ * POST /upload
+ * Accepts two files:
+ *  - original: raw capture (full resolution, before rotation/compress)
+ *  - corrected: rotated + compressed image
+ *
+ * Saves each pair into: ARCHIVE_FOLDER/<timestamp>/original.jpg + corrected.jpg
+ */
+app.post(
+  "/upload",
+  upload.fields([
+    { name: "original", maxCount: 1 },
+    { name: "corrected", maxCount: 1 }
+  ]),
+  (req, res) => {
+    try {
+      const originalFile = req.files["original"]?.[0];
+      const correctedFile = req.files["corrected"]?.[0];
+
+      if (!originalFile || !correctedFile) {
+        return res.status(400).json({
+          error: "Both 'original' and 'corrected' files are required."
+        });
+      }
+
+      const timestamp = Date.now().toString();
+      const photoDir = path.join(ARCHIVE_FOLDER, timestamp);
+      fs.mkdirSync(photoDir, { recursive: true });
+
+      const originalFileName = "original.jpg";
+      const correctedFileName = "corrected.jpg";
+
+      const originalPath = path.join(photoDir, originalFileName);
+      const correctedPath = path.join(photoDir, correctedFileName);
+
+      fs.writeFileSync(originalPath, originalFile.buffer);
+      fs.writeFileSync(correctedPath, correctedFile.buffer);
+
+      console.log(`Saved pair to: ${photoDir}`);
+
+      const originalSize = originalFile.size;
+      const correctedSize = correctedFile.size;
+
+      res.json({
+        id: timestamp,
+        originalUrl: `/files/${timestamp}/${originalFileName}`,
+        correctedUrl: `/files/${timestamp}/${correctedFileName}`,
+        originalSize,
+        correctedSize
+      });
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({ error: "Server error while saving files." });
+    }
+  }
+);
+
+/**
+ * GET /photos
+ * Returns all archived photo pairs and their file sizes.
+ */
+app.get("/photos", (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No photo uploaded." });
+    const items = [];
+
+    if (!fs.existsSync(ARCHIVE_FOLDER)) {
+      return res.json(items);
     }
 
-    const timestamp = Date.now();
-    const fileName = `inspection_${timestamp}.jpg`;
-    const filePath = path.join(ARCHIVE_FOLDER, fileName);
+    const entries = fs.readdirSync(ARCHIVE_FOLDER, { withFileTypes: true });
 
-    fs.writeFileSync(filePath, req.file.buffer);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
 
-    console.log(`Saved photo to: ${filePath}`);
+      const id = entry.name;
+      const dirPath = path.join(ARCHIVE_FOLDER, id);
+      const originalPath = path.join(dirPath, "original.jpg");
+      const correctedPath = path.join(dirPath, "corrected.jpg");
 
-    res.json({
-      message: "Photo archived successfully.",
-      folder: isVercel ? "/tmp/uploads/archive" : "uploads/archive",
-      fileName
-    });
+      if (!fs.existsSync(originalPath) || !fs.existsSync(correctedPath)) {
+        continue;
+      }
+
+      const originalStat = fs.statSync(originalPath);
+      const correctedStat = fs.statSync(correctedPath);
+
+      items.push({
+        id,
+        originalUrl: `/files/${id}/original.jpg`,
+        correctedUrl: `/files/${id}/corrected.jpg`,
+        originalSize: originalStat.size,
+        correctedSize: correctedStat.size
+      });
+    }
+
+    // Newest first
+    items.sort((a, b) => Number(b.id) - Number(a.id));
+
+    res.json(items);
   } catch (err) {
-    console.error("Upload error:", err);
-    res.status(500).json({ error: "Server error while saving file." });
+    console.error("Error reading photos:", err);
+    res.status(500).json({ error: "Failed to read photo archive." });
   }
 });
 
-// For local development, start the server normally.
-// On Vercel (where process.env.VERCEL is set), we export the app instead
-// and LET VERCEL handle the serverless function wrapper.
+// Local dev: start server normally
 if (!isVercel) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
@@ -69,4 +149,5 @@ if (!isVercel) {
   });
 }
 
+// Vercel: export the app for serverless
 module.exports = app;
