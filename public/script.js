@@ -18,6 +18,9 @@ const chooseFromDeviceBtn = document.getElementById("chooseFromDeviceBtn");
 const deviceInput = document.getElementById("deviceInput");
 const dropZone = document.getElementById("dropZone");
 
+// Tag overlay (fixed region where user lines up the tag)
+const tagOutline = document.querySelector(".tag-outline");
+
 // ----- State -----
 let stream = null;
 let hasCapture = false;
@@ -101,7 +104,7 @@ async function startCamera() {
     });
     video.srcObject = stream;
     setStatus(
-      "Camera started. Align the tag inside the outline and tap Capture."
+      "Camera started. Align the tag completely inside the dashed outline and tap Capture."
     );
   } catch (err) {
     console.error("Camera error:", err);
@@ -223,8 +226,44 @@ function updateBlobs(callback) {
   );
 }
 
-// Core: find tag and warp so it looks straight-on,
-// but pad the detected rectangle so it doesn’t look zoomed in.
+/**
+ * Compute the tag ROI (region of interest) in camera pixels
+ * based on the dashed overlay and the video element.
+ */
+function computeTagRoiRect() {
+  if (!tagOutline || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+
+  const videoRect = video.getBoundingClientRect();
+  const outlineRect = tagOutline.getBoundingClientRect();
+
+  const scaleX = rawCanvas.width / videoRect.width;
+  const scaleY = rawCanvas.height / videoRect.height;
+
+  const x = Math.max(
+    0,
+    Math.round((outlineRect.left - videoRect.left) * scaleX)
+  );
+  const y = Math.max(
+    0,
+    Math.round((outlineRect.top - videoRect.top) * scaleY)
+  );
+  const w = Math.min(
+    rawCanvas.width - x,
+    Math.round(outlineRect.width * scaleX)
+  );
+  const h = Math.min(
+    rawCanvas.height - y,
+    Math.round(outlineRect.height * scaleY)
+  );
+
+  if (w <= 0 || h <= 0) return null;
+  return { x, y, w, h };
+}
+
+// Core: use the overlay as a fixed ROI and look for a
+// 6.25" x 3" tag (aspect ≈ 2.1) inside that region.
 function runDeskewOrFallback() {
   if (!cvReady || !window.cv) {
     basicCopyToPreview();
@@ -239,14 +278,26 @@ function runDeskewOrFallback() {
 
   try {
     const src = cv.imread(rawCanvas);
-    const gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
-    // 1) Blur to smooth noise
+    // --- Limit processing to the overlay region ---
+    const roiRect = computeTagRoiRect();
+    let roi = src;
+    let roiIsSub = false;
+
+    if (roiRect) {
+      const rect = new cv.Rect(roiRect.x, roiRect.y, roiRect.w, roiRect.h);
+      roi = src.roi(rect);
+      roiIsSub = true;
+    }
+
+    const gray = new cv.Mat();
+    cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY, 0);
+
+    // Blur to smooth noise
     const blur = new cv.Mat();
     cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
 
-    // 2) Adaptive threshold to create a clear tag silhouette
+    // Adaptive threshold to get a solid tag silhouette
     const binary = new cv.Mat();
     cv.adaptiveThreshold(
       blur,
@@ -258,12 +309,12 @@ function runDeskewOrFallback() {
       10
     );
 
-    // 3) Morphological close to fill gaps in the tag region
+    // Morphological close
     const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
     const morph = new cv.Mat();
     cv.morphologyEx(binary, morph, cv.MORPH_CLOSE, kernel);
 
-    // 4) Find contours on the cleaned binary image
+    // Contours
     const contours = new cv.MatVector();
     const hierarchy = new cv.Mat();
     cv.findContours(
@@ -277,7 +328,7 @@ function runDeskewOrFallback() {
     const frameW = gray.cols;
     const frameH = gray.rows;
     const frameArea = frameW * frameH;
-    const minArea = frameArea * 0.03; // at least 3% of frame
+    const minArea = frameArea * 0.25; // tag should be a big chunk of the ROI
 
     let best = null;
     let bestArea = 0;
@@ -293,8 +344,9 @@ function runDeskewOrFallback() {
         const area = rect.width * rect.height;
         const aspect = rect.height / rect.width; // tag is tall
 
-        // big enough + tall and skinny-ish
-        if (area >= minArea && aspect >= 1.8 && aspect <= 5.5) {
+        // Tag is 6.25" x 3" ≈ aspect 2.1
+        // Allow some wiggle room: between 1.7 and 2.6
+        if (area >= minArea && aspect >= 1.7 && aspect <= 2.6) {
           if (area > bestArea) {
             if (best) best.delete();
             best = approx;
@@ -312,7 +364,7 @@ function runDeskewOrFallback() {
     }
 
     if (best && bestArea > 0) {
-      // Extract 4 corner points correctly
+      // Extract 4 points from approx.data32S (ROI coordinates)
       const pts = [];
       const data = best.data32S; // [x0,y0,x1,y1,x2,y2,x3,y3]
       for (let i = 0; i < data.length; i += 2) {
@@ -328,7 +380,7 @@ function runDeskewOrFallback() {
         let [tl, tr] = top;
         let [bl, br] = bottom;
 
-        // Expand a bit so we see the whole tag, but not too zoomed
+        // Slightly pad the rectangle so we don't crop too tight
         const cx = (tl.x + tr.x + bl.x + br.x) / 4;
         const cy = (tl.y + tr.y + bl.y + br.y) / 4;
         const padFactor = 1.05; // 5% outward
@@ -409,6 +461,8 @@ function runDeskewOrFallback() {
       displayMatOnCanvas(gray);
     }
 
+    // Cleanup
+    if (roiIsSub) roi.delete();
     src.delete();
     gray.delete();
     blur.delete();
@@ -421,11 +475,11 @@ function runDeskewOrFallback() {
     updateBlobs(() => {
       if (usedPerspective) {
         setStatus(
-          "Captured and auto-straightened. Tag is now aligned like a straight-on shot."
+          "Captured, auto-straightened, and converted to grayscale using the tag overlay."
         );
       } else {
         setStatus(
-          "Captured, but could not confidently find the tag edges. Showing best grayscale capture."
+          "Captured, but could not confidently find the tag edges in the overlay. Showing best grayscale capture."
         );
       }
     });
@@ -439,7 +493,6 @@ function runDeskewOrFallback() {
     });
   }
 }
-
 
 // ----- Device upload & drag/drop -----
 chooseFromDeviceBtn.addEventListener("click", () => {
