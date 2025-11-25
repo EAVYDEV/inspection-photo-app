@@ -1,3 +1,4 @@
+// ----- DOM references -----
 const startCameraBtn = document.getElementById("startCameraBtn");
 const captureBtn = document.getElementById("captureBtn");
 const saveBtn = document.getElementById("saveBtn");
@@ -17,13 +18,14 @@ const chooseFromDeviceBtn = document.getElementById("chooseFromDeviceBtn");
 const deviceInput = document.getElementById("deviceInput");
 const dropZone = document.getElementById("dropZone");
 
-// Internal state
+// ----- State -----
 let stream = null;
 let hasCapture = false;
 let cvReady = false;
+
 const MAX_SIZE = 1600;
 
-// Offscreen canvas for raw capture
+// Offscreen raw capture canvas
 const rawCanvas = document.createElement("canvas");
 const rawCtx = rawCanvas.getContext("2d");
 
@@ -31,9 +33,8 @@ const rawCtx = rawCanvas.getContext("2d");
 let lastOriginalBlob = null;
 let lastCorrectedBlob = null;
 
-/* ---------- Helpers ---------- */
-
-function setStatus(message, type) {
+// ----- Helpers -----
+function setStatus(message) {
   if (!statusEl) return;
   statusEl.textContent = message;
 }
@@ -42,8 +43,6 @@ function setGalleryStatus(message) {
   if (!galleryStatusEl) return;
   galleryStatusEl.textContent = message;
 }
-
-/* ---------- Nav ---------- */
 
 function showCaptureView() {
   captureView.style.display = "";
@@ -61,17 +60,10 @@ function showGalleryView() {
   loadGallery();
 }
 
-navCapture.addEventListener("click", () => {
-  showCaptureView();
-});
+navCapture.addEventListener("click", showCaptureView);
+navGallery.addEventListener("click", showGalleryView);
 
-navGallery.addEventListener("click", () => {
-  showGalleryView();
-});
-
-/* ---------- OpenCV runtime hook ---------- */
-
-// Start with capture & save disabled until OpenCV is ready
+// ----- OpenCV init -----
 captureBtn.disabled = true;
 saveBtn.disabled = true;
 
@@ -81,25 +73,21 @@ if (window.cv) {
     console.log("OpenCV.js runtime initialized");
     captureBtn.disabled = false;
     setStatus(
-      "Image processor ready. Start the camera, align the tag, then tap Capture.",
-      "success"
+      "Image processor ready. Start the camera, align the tag, then tap Capture."
     );
   };
 } else {
-  console.warn("OpenCV.js not found – using basic capture.");
+  console.warn("OpenCV.js not found – using basic capture only.");
   setStatus(
-    "Advanced processing unavailable. Captures will not be auto-straightened.",
-    "error"
+    "Advanced processing unavailable. Captures will not be auto-straightened."
   );
 }
 
-/* ---------- Camera ---------- */
-
+// ----- Camera -----
 async function startCamera() {
   if (!cvReady) {
     setStatus(
-      "Still loading the image processor. Wait a moment until the message says it's ready, then try again.",
-      "error"
+      "Still loading the image processor. Wait a moment until the message says it's ready, then try again."
     );
     return;
   }
@@ -110,15 +98,13 @@ async function startCamera() {
       video: { facingMode: "environment" },
       audio: false
     });
-
     video.srcObject = stream;
     setStatus(
-      "Camera started. Align the tag in the outline and tap Capture.",
-      "success"
+      "Camera started. Align the tag inside the outline and tap Capture."
     );
   } catch (err) {
     console.error("Camera error:", err);
-    setStatus("Unable to access camera. Check permissions.", "error");
+    setStatus("Unable to access camera. Check permissions.");
   }
 }
 
@@ -130,22 +116,19 @@ function stopCamera() {
   }
 }
 
-startCameraBtn.addEventListener("click", () => {
-  startCamera();
-});
+startCameraBtn.addEventListener("click", startCamera);
 
-/* ---------- Capture & processing ---------- */
-
+// ----- Capture + processing -----
 function captureFrame() {
   if (!stream) {
-    setStatus("Camera is not active. Start the camera first.", "error");
+    setStatus("Camera is not active. Start the camera first.");
     return;
   }
 
   const vWidth = video.videoWidth;
   const vHeight = video.videoHeight;
   if (!vWidth || !vHeight) {
-    setStatus("Camera is not ready yet. Try again in a moment.", "error");
+    setStatus("Camera is not ready yet. Try again in a moment.");
     return;
   }
 
@@ -157,6 +140,8 @@ function captureFrame() {
   saveBtn.disabled = false;
   runDeskewOrFallback();
 }
+
+captureBtn.addEventListener("click", captureFrame);
 
 function basicCopyToPreview() {
   const srcW = rawCanvas.width;
@@ -174,10 +159,10 @@ function basicCopyToPreview() {
 }
 
 function displayMatOnCanvas(mat) {
-  const gray = mat; // expect CV_8UC1
-
+  const gray = mat; // CV_8UC1
   const srcW = gray.cols;
   const srcH = gray.rows;
+
   const scale = MAX_SIZE / Math.max(srcW, srcH);
   const targetW = scale < 1 ? Math.round(srcW * scale) : srcW;
   const targetH = scale < 1 ? Math.round(srcH * scale) : srcH;
@@ -195,10 +180,10 @@ function displayMatOnCanvas(mat) {
   for (let y = 0; y < targetH; y++) {
     for (let x = 0; x < targetW; x++) {
       const v = resized.ucharPtr(y, x)[0];
-      imageData.data[idx++] = v; // R
-      imageData.data[idx++] = v; // G
-      imageData.data[idx++] = v; // B
-      imageData.data[idx++] = 255; // A
+      imageData.data[idx++] = v;
+      imageData.data[idx++] = v;
+      imageData.data[idx++] = v;
+      imageData.data[idx++] = 255;
     }
   }
 
@@ -237,16 +222,18 @@ function updateBlobs(callback) {
   );
 }
 
+// Core: find tag and warp so it looks straight-on
 function runDeskewOrFallback() {
   if (!cvReady || !window.cv) {
     basicCopyToPreview();
     updateBlobs();
     setStatus(
-      "Captured. Advanced processing not available, showing uncorrected preview.",
-      "error"
+      "Captured. Advanced processing not available, showing uncorrected preview."
     );
     return;
   }
+
+  let usedPerspective = false;
 
   try {
     const src = cv.imread(rawCanvas);
@@ -269,6 +256,11 @@ function runDeskewOrFallback() {
       cv.CHAIN_APPROX_SIMPLE
     );
 
+    const frameW = gray.cols;
+    const frameH = gray.rows;
+    const frameArea = frameW * frameH;
+    const minArea = frameArea * 0.01; // at least 1% of frame
+
     let best = null;
     let bestArea = 0;
 
@@ -279,11 +271,19 @@ function runDeskewOrFallback() {
       cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
       if (approx.rows === 4) {
-        const area = cv.contourArea(approx);
-        if (area > bestArea) {
-          if (best) best.delete();
-          best = approx;
-          bestArea = area;
+        const rect = cv.boundingRect(approx);
+        const area = rect.width * rect.height;
+        const aspect = rect.height / rect.width; // tag is tall
+
+        // Filter: big enough, reasonably tall tag shape
+        if (area >= minArea && aspect >= 1.2 && aspect <= 4.0) {
+          if (area > bestArea) {
+            if (best) best.delete();
+            best = approx;
+            bestArea = area;
+          } else {
+            approx.delete();
+          }
         } else {
           approx.delete();
         }
@@ -293,67 +293,83 @@ function runDeskewOrFallback() {
       cnt.delete();
     }
 
+    // default to original gray
     let outputMat = gray;
 
-    if (best && bestArea > 10000) {
-      // Order the 4 corners
+    if (best && bestArea > 0) {
+      // Extract 4 corner points correctly from approx.data32S
       const pts = [];
-      for (let i = 0; i < 4; i++) {
-        const x = best.intAt(i, 0);
-        const y = best.intAt(i, 1);
-        pts.push({ x, y });
+      const data = best.data32S; // [x0,y0,x1,y1,x2,y2,x3,y3]
+      for (let i = 0; i < data.length; i += 2) {
+        pts.push({ x: data[i], y: data[i + 1] });
       }
 
-      // sort by y, then split into top/bottom
-      pts.sort((a, b) => a.y - b.y);
-      let top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
-      let bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
+      if (pts.length === 4) {
+        // sort by y (top to bottom), then x
+        pts.sort((a, b) => a.y - b.y);
+        const top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
+        const bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
 
-      const [tl, tr] = top;
-      const [bl, br] = bottom;
+        const [tl, tr] = top;
+        const [bl, br] = bottom;
 
-      const widthTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
-      const widthBottom = Math.hypot(br.x - bl.x, br.y - bl.y);
-      const heightLeft = Math.hypot(bl.x - tl.x, bl.y - tl.y);
-      const heightRight = Math.hypot(br.x - tr.x, br.y - tr.y);
+        const widthTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+        const widthBottom = Math.hypot(br.x - bl.x, br.y - bl.y);
+        const heightLeft = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+        const heightRight = Math.hypot(br.x - tr.x, br.y - tr.y);
 
-      const dstWidth = Math.round(Math.max(widthTop, widthBottom));
-      const dstHeight = Math.round(Math.max(heightLeft, heightRight));
+        const dstWidth = Math.round(Math.max(widthTop, widthBottom));
+        const dstHeight = Math.round(Math.max(heightLeft, heightRight));
 
-      const srcTri = cv.matFromArray(
-        4,
-        1,
-        cv.CV_32FC2,
-        [
-          tl.x, tl.y,
-          tr.x, tr.y,
-          bl.x, bl.y,
-          br.x, br.y
-        ]
-      );
-      const dstTri = cv.matFromArray(
-        4,
-        1,
-        cv.CV_32FC2,
-        [
-          0, 0,
-          dstWidth, 0,
-          0, dstHeight,
-          dstWidth, dstHeight
-        ]
-      );
+        if (dstWidth > 0 && dstHeight > 0) {
+          const srcTri = cv.matFromArray(
+            4,
+            1,
+            cv.CV_32FC2,
+            [
+              tl.x, tl.y,
+              tr.x, tr.y,
+              bl.x, bl.y,
+              br.x, br.y
+            ]
+          );
+          const dstTri = cv.matFromArray(
+            4,
+            1,
+            cv.CV_32FC2,
+            [
+              0, 0,
+              dstWidth, 0,
+              0, dstHeight,
+              dstWidth, dstHeight
+            ]
+          );
 
-      const M = cv.getPerspectiveTransform(srcTri, dstTri);
-      const warped = new cv.Mat();
-      cv.warpPerspective(gray, warped, M, new cv.Size(dstWidth, dstHeight));
+          const M = cv.getPerspectiveTransform(srcTri, dstTri);
+          const warped = new cv.Mat();
+          cv.warpPerspective(
+            gray,
+            warped,
+            M,
+            new cv.Size(dstWidth, dstHeight)
+          );
 
-      srcTri.delete();
-      dstTri.delete();
-      M.delete();
-      best.delete();
+          srcTri.delete();
+          dstTri.delete();
+          M.delete();
+          best.delete();
 
-      displayMatOnCanvas(warped);
-      warped.delete();
+          displayMatOnCanvas(warped);
+          warped.delete();
+          usedPerspective = true;
+        } else {
+          best.delete();
+          displayMatOnCanvas(gray);
+        }
+      } else {
+        best.delete();
+        displayMatOnCanvas(gray);
+      }
     } else {
       if (best) best.delete();
       displayMatOnCanvas(gray);
@@ -367,29 +383,28 @@ function runDeskewOrFallback() {
     hierarchy.delete();
 
     updateBlobs(() => {
-      setStatus(
-        "Captured, perspective-corrected and converted to grayscale.",
-        "success"
-      );
+      if (usedPerspective) {
+        setStatus(
+          "Captured and auto-straightened. Tag is now aligned like a straight-on shot."
+        );
+      } else {
+        setStatus(
+          "Captured, but could not confidently find the tag edges. Showing best grayscale capture."
+        );
+      }
     });
   } catch (err) {
     console.error("Deskew error:", err);
     basicCopyToPreview();
     updateBlobs(() => {
       setStatus(
-        "Captured, but auto-straighten failed. Showing uncorrected preview.",
-        "error"
+        "Captured, but auto-straighten failed. Showing uncorrected preview."
       );
     });
   }
 }
 
-captureBtn.addEventListener("click", () => {
-  captureFrame();
-});
-
-/* ---------- Device upload & drag/drop ---------- */
-
+// ----- Device upload & drag/drop -----
 chooseFromDeviceBtn.addEventListener("click", () => {
   deviceInput.click();
 });
@@ -403,7 +418,7 @@ deviceInput.addEventListener("change", () => {
 
 function loadImageFile(file) {
   if (!file.type.startsWith("image/")) {
-    setStatus("Please choose an image file.", "error");
+    setStatus("Please choose an image file.");
     return;
   }
 
@@ -417,10 +432,10 @@ function loadImageFile(file) {
       hasCapture = true;
       saveBtn.disabled = false;
       runDeskewOrFallback();
-      setStatus("Image loaded from device and processed.", "success");
+      setStatus("Image loaded from device and processed.");
     };
     img.onerror = () => {
-      setStatus("Failed to load image.", "error");
+      setStatus("Failed to load image.");
     };
     img.src = reader.result;
   };
@@ -446,15 +461,14 @@ function loadImageFile(file) {
 dropZone.addEventListener("drop", (e) => {
   const file = e.dataTransfer.files[0];
   if (file) {
-    loadImageFile(file);
+  loadImageFile(file);
   }
 });
 
-/* ---------- Upload to server ---------- */
-
+// ----- Upload to server -----
 function savePhoto() {
   if (!hasCapture) {
-    setStatus("Capture or load a tag first.", "error");
+    setStatus("Capture or load a tag first.");
     return;
   }
 
@@ -462,7 +476,7 @@ function savePhoto() {
 
   updateBlobs(async () => {
     if (!lastOriginalBlob || !lastCorrectedBlob) {
-      setStatus("Unable to prepare image blobs.", "error");
+      setStatus("Unable to prepare image blobs.");
       return;
     }
 
@@ -488,22 +502,18 @@ function savePhoto() {
       setStatus(
         `Saved pair ${data.id}. Original: ${formatBytes(
           data.originalSize
-        )}, Corrected: ${formatBytes(data.correctedSize)}.`,
-        "success"
+        )}, Corrected: ${formatBytes(data.correctedSize)}.`
       );
     } catch (err) {
       console.error("Upload error:", err);
-      setStatus("Failed to upload images.", "error");
+      setStatus("Failed to upload images.");
     }
   });
 }
 
-saveBtn.addEventListener("click", () => {
-  savePhoto();
-});
+saveBtn.addEventListener("click", savePhoto);
 
-/* ---------- Gallery ---------- */
-
+// ----- Gallery -----
 function formatBytes(bytes) {
   if (bytes == null) return "";
   const kb = bytes / 1024;
@@ -518,9 +528,7 @@ async function loadGallery() {
 
   try {
     const res = await fetch("/photos");
-    if (!res.ok) {
-      throw new Error(`Failed with status ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`Failed with status ${res.status}`);
 
     const items = await res.json();
     if (!Array.isArray(items) || items.length === 0) {
@@ -538,6 +546,14 @@ async function loadGallery() {
       const origImg = document.createElement("img");
       origImg.src = item.originalUrl;
       origImg.alt = `Original ${item.id}`;
+      // Fallback to corrected if original failed
+      origImg.onerror = () => {
+        console.warn(
+          `Original image failed for ${item.id}, falling back to corrected.`
+        );
+        origImg.src = item.correctedUrl;
+        origImg.alt = `Original (fallback to corrected) ${item.id}`;
+      };
       const origSize = document.createElement("div");
       origSize.textContent = formatBytes(item.originalSize);
       origTd.appendChild(origImg);
@@ -566,10 +582,7 @@ async function loadGallery() {
   }
 }
 
-refreshGalleryBtn.addEventListener("click", () => {
-  loadGallery();
-});
+refreshGalleryBtn.addEventListener("click", loadGallery);
 
-/* ---------- Initial state ---------- */
-
+// ----- Initial -----
 showCaptureView();
