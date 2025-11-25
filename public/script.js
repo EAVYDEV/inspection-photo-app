@@ -242,16 +242,32 @@ function runDeskewOrFallback() {
     const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
+    // 1) Blur to smooth noise
     const blur = new cv.Mat();
     cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
 
-    const edges = new cv.Mat();
-    cv.Canny(blur, edges, 50, 150);
+    // 2) Adaptive threshold to create a clear tag silhouette
+    const binary = new cv.Mat();
+    cv.adaptiveThreshold(
+      blur,
+      binary,
+      255,
+      cv.ADAPTIVE_THRESH_MEAN_C,
+      cv.THRESH_BINARY_INV,
+      31,
+      10
+    );
 
+    // 3) Morphological close to fill gaps in the tag region
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    const morph = new cv.Mat();
+    cv.morphologyEx(binary, morph, cv.MORPH_CLOSE, kernel);
+
+    // 4) Find contours on the cleaned binary image
     const contours = new cv.MatVector();
     const hierarchy = new cv.Mat();
     cv.findContours(
-      edges,
+      morph,
       contours,
       hierarchy,
       cv.RETR_EXTERNAL,
@@ -261,7 +277,7 @@ function runDeskewOrFallback() {
     const frameW = gray.cols;
     const frameH = gray.rows;
     const frameArea = frameW * frameH;
-    const minArea = frameArea * 0.01; // at least 1% of frame
+    const minArea = frameArea * 0.03; // at least 3% of frame
 
     let best = null;
     let bestArea = 0;
@@ -277,8 +293,8 @@ function runDeskewOrFallback() {
         const area = rect.width * rect.height;
         const aspect = rect.height / rect.width; // tag is tall
 
-        // Filter: big enough, reasonably tall tag shape
-        if (area >= minArea && aspect >= 1.2 && aspect <= 4.0) {
+        // big enough + tall and skinny-ish
+        if (area >= minArea && aspect >= 1.8 && aspect <= 5.5) {
           if (area > bestArea) {
             if (best) best.delete();
             best = approx;
@@ -296,7 +312,7 @@ function runDeskewOrFallback() {
     }
 
     if (best && bestArea > 0) {
-      // Extract 4 corner points correctly from approx.data32S
+      // Extract 4 corner points correctly
       const pts = [];
       const data = best.data32S; // [x0,y0,x1,y1,x2,y2,x3,y3]
       for (let i = 0; i < data.length; i += 2) {
@@ -312,10 +328,10 @@ function runDeskewOrFallback() {
         let [tl, tr] = top;
         let [bl, br] = bottom;
 
-        // ---- PAD THE RECTANGLE OUTWARD TO AVOID ZOOMED-IN CROP ----
+        // Expand a bit so we see the whole tag, but not too zoomed
         const cx = (tl.x + tr.x + bl.x + br.x) / 4;
         const cy = (tl.y + tr.y + bl.y + br.y) / 4;
-        const padFactor = 1.08; // 8% outward in all directions
+        const padFactor = 1.05; // 5% outward
 
         function padPoint(p) {
           const px = cx + (p.x - cx) * padFactor;
@@ -396,14 +412,16 @@ function runDeskewOrFallback() {
     src.delete();
     gray.delete();
     blur.delete();
-    edges.delete();
+    binary.delete();
+    morph.delete();
+    kernel.delete();
     contours.delete();
     hierarchy.delete();
 
     updateBlobs(() => {
       if (usedPerspective) {
         setStatus(
-          "Captured and auto-straightened with margin so the whole tag is visible."
+          "Captured and auto-straightened. Tag is now aligned like a straight-on shot."
         );
       } else {
         setStatus(
@@ -421,6 +439,7 @@ function runDeskewOrFallback() {
     });
   }
 }
+
 
 // ----- Device upload & drag/drop -----
 chooseFromDeviceBtn.addEventListener("click", () => {
