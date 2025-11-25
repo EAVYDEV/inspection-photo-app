@@ -218,164 +218,141 @@ function autoDeskewWithOpenCV() {
   }
 
   let src = cv.imread(rawCanvas);
-  let gray = new cv.Mat();
+  let lab = new cv.Mat();
   let thresh = new cv.Mat();
+  let opened = new cv.Mat();
   let contours = new cv.MatVector();
   let hierarchy = new cv.Mat();
 
-  try {
-    // 1. Grayscale
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+  let channels = new cv.MatVector();
+  let aChannel = null;
+  let kernel = null;
 
-    // 2. Adaptive threshold to highlight tag edges
-    cv.adaptiveThreshold(
-      gray,
+  try {
+    // 1. Convert to LAB for better color separation
+    cv.cvtColor(src, lab, cv.COLOR_RGBA2Lab, 0);
+
+    // 2. Use the A channel to separate tag blue from brown background
+    cv.split(lab, channels);
+    aChannel = channels.get(1);
+
+    // 3. Blur + Otsu threshold to isolate tag
+    cv.GaussianBlur(aChannel, aChannel, new cv.Size(11, 11), 0);
+    cv.threshold(
+      aChannel,
       thresh,
+      0,
       255,
-      cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-      cv.THRESH_BINARY_INV,
-      15,
-      10
+      cv.THRESH_BINARY + cv.THRESH_OTSU
     );
 
-    // 3. External contours only
+    // 4. Morphology close to fill gaps
+    kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 25));
+    cv.morphologyEx(thresh, opened, cv.MORPH_CLOSE, kernel);
+
+    // 5. Find external contours
     cv.findContours(
-      thresh,
+      opened,
       contours,
       hierarchy,
       cv.RETR_EXTERNAL,
       cv.CHAIN_APPROX_SIMPLE
     );
 
-    let maxArea = 0;
-    let bestQuad = null;
+    if (contours.size() === 0) {
+      throw new Error("No tag region detected.");
+    }
 
-    // Heuristic: the tag is a tall rectangle, not a square.
-    const MIN_ASPECT = 1.5; // height/width (or width/height) must be at least this
+    // 6. Pick largest contour = tag region
+    let maxArea = 0;
+    let bestContour = null;
 
     for (let i = 0; i < contours.size(); i++) {
       const cnt = contours.get(i);
-      const peri = cv.arcLength(cnt, true);
-      const approx = new cv.Mat();
-      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-
-      if (approx.rows === 4) {
-        const rect = cv.boundingRect(approx);
-        const w = rect.width;
-        const h = rect.height;
-        const aspect = Math.max(w, h) / Math.min(w, h);
-
-        // filter out more-square shapes (like the inner grid)
-        if (aspect < MIN_ASPECT) {
-          approx.delete();
-          cnt.delete();
-          continue;
-        }
-
-        const area = cv.contourArea(approx, false);
-        if (area > maxArea && area > src.rows * src.cols * 0.05) {
-          maxArea = area;
-          if (bestQuad) bestQuad.delete();
-          bestQuad = approx;
-        } else {
-          approx.delete();
-        }
-      } else {
-        approx.delete();
+      const area = cv.contourArea(cnt, false);
+      if (area > maxArea) {
+        maxArea = area;
+        bestContour = cnt;
       }
-      cnt.delete();
     }
 
-    if (!bestQuad) {
-      throw new Error("No suitable tall quadrilateral found");
+    if (!bestContour) {
+      throw new Error("No valid tag contour found.");
     }
 
-    // 4. Order quad points: TL, TR, BR, BL
-    const pts = [];
-    for (let i = 0; i < 4; i++) {
-      pts.push({ x: bestQuad.intAt(i, 0), y: bestQuad.intAt(i, 1) });
+    // 7. Use rotated bounding rect of that contour
+    let rotatedRect = cv.minAreaRect(bestContour);
+    let box = cv.RotatedRect.points(rotatedRect);
+
+    // Build source points from the rotated rectangle vertices
+    let srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      box[0].x, box[0].y,
+      box[1].x, box[1].y,
+      box[2].x, box[2].y,
+      box[3].x, box[3].y
+    ]);
+
+    let w = rotatedRect.size.width;
+    let h = rotatedRect.size.height;
+
+    if (w <= 0 || h <= 0) {
+      srcPts.delete();
+      throw new Error("Invalid rotated rectangle size.");
     }
-    const ordered = orderQuadPoints(pts);
 
-    const widthTop = distance(ordered[0], ordered[1]);
-    const widthBottom = distance(ordered[3], ordered[2]);
-    const maxWidth = Math.max(widthTop, widthBottom);
+    // Maintain portrait orientation
+    if (h < w) {
+      let tmp = w;
+      w = h;
+      h = tmp;
+    }
 
-    const heightLeft = distance(ordered[0], ordered[3]);
-    const heightRight = distance(ordered[1], ordered[2]);
-    const maxHeight = Math.max(heightLeft, heightRight);
-
-    let destWidth = maxWidth;
-    let destHeight = maxHeight;
-    const longSide = Math.max(destWidth, destHeight);
+    // Limit max size
+    const longSide = Math.max(w, h);
     let scale = 1;
     if (longSide > MAX_SIZE) {
       scale = MAX_SIZE / longSide;
-      destWidth *= scale;
-      destHeight *= scale;
     }
+    const dstW = Math.round(w * scale);
+    const dstH = Math.round(h * scale);
 
-    destWidth = Math.round(destWidth);
-    destHeight = Math.round(destHeight);
-
-    let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      ordered[0].x,
-      ordered[0].y,
-      ordered[1].x,
-      ordered[1].y,
-      ordered[2].x,
-      ordered[2].y,
-      ordered[3].x,
-      ordered[3].y
+    let dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0,
+      dstW - 1, 0,
+      dstW - 1, dstH - 1,
+      0, dstH - 1
     ]);
 
-    let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0,
-      0,
-      destWidth - 1,
-      0,
-      destWidth - 1,
-      destHeight - 1,
-      0,
-      destHeight - 1
-    ]);
-
-    let M = cv.getPerspectiveTransform(srcTri, dstTri);
+    // 8. Warp to get straightened tag
+    let M = cv.getPerspectiveTransform(srcPts, dstPts);
     let warped = new cv.Mat();
-    const dsize = new cv.Size(destWidth, destHeight);
-    cv.warpPerspective(
-      src,
-      warped,
-      M,
-      dsize,
-      cv.INTER_LINEAR,
-      cv.BORDER_CONSTANT,
-      new cv.Scalar()
-    );
+    cv.warpPerspective(src, warped, M, new cv.Size(dstW, dstH));
 
-    // 5. Convert warped image to grayscale and display
+    // 9. Convert warped image to grayscale
     let warpedGray = new cv.Mat();
-    let warpedGrayRgba = new cv.Mat();
     cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
-    cv.cvtColor(warpedGray, warpedGrayRgba, cv.COLOR_GRAY2RGBA, 0);
 
-    canvas.width = destWidth;
-    canvas.height = destHeight;
-    cv.imshow(canvas, warpedGrayRgba);
+    // 10. Draw to preview canvas
+    canvas.width = dstW;
+    canvas.height = dstH;
+    cv.imshow(canvas, warpedGray);
 
     warped.delete();
     warpedGray.delete();
-    warpedGrayRgba.delete();
-    srcTri.delete();
-    dstTri.delete();
     M.delete();
-    bestQuad.delete();
+    srcPts.delete();
+    dstPts.delete();
   } finally {
     src.delete();
-    gray.delete();
+    lab.delete();
     thresh.delete();
+    opened.delete();
     contours.delete();
     hierarchy.delete();
+
+    if (aChannel) aChannel.delete();
+    channels.delete();
+    if (kernel) kernel.delete();
   }
 }
 
