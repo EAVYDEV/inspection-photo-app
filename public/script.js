@@ -332,7 +332,6 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   
   /* --- OpenCV-based automatic perspective correction & grayscale --- */
-
   function autoDeskewWithOpenCV() {
     if (!cvReady || !window.cv) {
       return false;
@@ -350,6 +349,10 @@ window.addEventListener("DOMContentLoaded", () => {
       roiIsSub = true;
     }
   
+    const roiWidth = roi.cols;
+    const roiHeight = roi.rows;
+    const roiArea = roiWidth * roiHeight;
+  
     const gray = new cv.Mat();
     const blur = new cv.Mat();
     const edges = new cv.Mat();
@@ -360,8 +363,42 @@ window.addEventListener("DOMContentLoaded", () => {
     let warpedGray = null;
     let success = false;
   
+    // helper: show grayscale ROI (no perspective warp) if we don't trust the contour
+    function showGrayscaleRoi() {
+      const previewGray = new cv.Mat();
+      cv.cvtColor(roi, previewGray, cv.COLOR_RGBA2GRAY, 0);
+  
+      // scale to MAX_SIZE but keep aspect
+      let w = previewGray.cols;
+      let h = previewGray.rows;
+      const longSide = Math.max(w, h);
+      let scale = 1;
+      if (longSide > MAX_SIZE) {
+        scale = MAX_SIZE / longSide;
+      }
+      const dstW = Math.round(w * scale);
+      const dstH = Math.round(h * scale);
+  
+      const resized = new cv.Mat();
+      cv.resize(
+        previewGray,
+        resized,
+        new cv.Size(dstW, dstH),
+        0,
+        0,
+        cv.INTER_AREA
+      );
+  
+      canvas.width = dstW;
+      canvas.height = dstH;
+      cv.imshow(canvas, resized);
+  
+      previewGray.delete();
+      resized.delete();
+    }
+  
     try {
-      // 1. Edge detection in the ROI
+      // 1) Edge detection in ROI
       cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY, 0);
       cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
       cv.Canny(blur, edges, 50, 150);
@@ -375,11 +412,11 @@ window.addEventListener("DOMContentLoaded", () => {
       );
   
       if (contours.size() === 0) {
-        basicCopyToPreview();
+        showGrayscaleRoi();
         return false;
       }
   
-      // 2. Pick the largest contour
+      // 2) Pick largest contour
       let bestIdx = 0;
       let bestArea = 0;
       for (let i = 0; i < contours.size(); i++) {
@@ -391,22 +428,26 @@ window.addEventListener("DOMContentLoaded", () => {
         }
       }
   
+      // If the largest contour is tiny vs. the overlay area, it's probably
+      // just the hole or a bit of text — not the full tag. Fall back.
+      if (bestArea < roiArea * 0.25) {
+        // less than 25% of ROI area → don't trust it
+        showGrayscaleRoi();
+        return false;
+      }
+  
       const bestContour = contours.get(bestIdx);
   
-      // 3. Minimum-area rectangle around that contour
+      // 3) Minimum-area rectangle around that contour
       const rotatedRect = cv.minAreaRect(bestContour);
-      const box = cv.RotatedRect.points(rotatedRect); // array of 4 cv.Point
+      const box = cv.RotatedRect.points(rotatedRect); // 4 cv.Point
   
-      // 4. Convert to plain {x,y} and order points:
-      //    top-left, top-right, bottom-right, bottom-left
+      // 4) Order corners: tl, tr, br, bl
       let pts = box.map((p) => ({ x: p.x, y: p.y }));
   
-      // sort by Y (top to bottom)
-      pts.sort((a, b) => a.y - b.y);
+      pts.sort((a, b) => a.y - b.y); // top 2, bottom 2
       const top = pts.slice(0, 2);
       const bottom = pts.slice(2, 4);
-  
-      // within each row, sort by X (left to right)
       top.sort((a, b) => a.x - b.x);
       bottom.sort((a, b) => a.x - b.x);
   
@@ -415,7 +456,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const bl = bottom[0];
       const br = bottom[1];
   
-      // 5. Compute target width/height from edges
+      // 5) Compute target width/height
       const widthA = distance(br, bl);
       const widthB = distance(tr, tl);
       let maxWidth = Math.max(widthA, widthB);
@@ -425,11 +466,20 @@ window.addEventListener("DOMContentLoaded", () => {
       let maxHeight = Math.max(heightA, heightB);
   
       if (maxWidth <= 0 || maxHeight <= 0) {
-        basicCopyToPreview();
+        showGrayscaleRoi();
         return false;
       }
   
-      // Limit size to MAX_SIZE to keep file small
+      // If the warped size would be much smaller than the ROI, it's probably wrong
+      if (
+        maxWidth < roiWidth * 0.4 || // less than 40% of ROI width
+        maxHeight < roiHeight * 0.4   // or height
+      ) {
+        showGrayscaleRoi();
+        return false;
+      }
+  
+      // 6) Limit size to MAX_SIZE
       const longSide = Math.max(maxWidth, maxHeight);
       let scale = 1;
       if (longSide > MAX_SIZE) {
@@ -438,7 +488,6 @@ window.addEventListener("DOMContentLoaded", () => {
       const dstW = Math.round(maxWidth * scale);
       const dstH = Math.round(maxHeight * scale);
   
-      // 6. Build perspective transform using ordered corners
       const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
         tl.x, tl.y,
         tr.x, tr.y,
@@ -457,7 +506,7 @@ window.addEventListener("DOMContentLoaded", () => {
       warped = new cv.Mat();
       cv.warpPerspective(roi, warped, M, new cv.Size(dstW, dstH));
   
-      // 7. Convert warped image to grayscale
+      // 7) Convert warped to grayscale and show
       warpedGray = new cv.Mat();
       cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
   
@@ -484,6 +533,7 @@ window.addEventListener("DOMContentLoaded", () => {
   
     return success;
   }
+  
     /* ---------- Save / upload ---------- */
 
   function canvasToBlob(canvasEl, type, quality) {
