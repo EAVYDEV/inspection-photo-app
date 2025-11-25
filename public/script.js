@@ -13,108 +13,397 @@ const refreshGalleryBtn = document.getElementById("refreshGalleryBtn");
 const galleryStatusEl = document.getElementById("galleryStatus");
 const photoTableBody = document.getElementById("photoTableBody");
 
-// Upload controls
+const chooseFromDeviceBtn = document.getElementById("chooseFromDeviceBtn");
+const deviceInput = document.getElementById("deviceInput");
 const dropZone = document.getElementById("dropZone");
-const fileInput = document.getElementById("fileInput");
-const choosePhotoBtn = document.getElementById("choosePhotoBtn");
 
-// Hidden raw canvas to hold original frame / uploaded image
-const rawCanvas = document.createElement("canvas");
-const rawCtx = rawCanvas.getContext("2d");
-
+// Internal state
 let stream = null;
 let hasCapture = false;
 let cvReady = false;
-
-// Limit max size for compression (longest side)
 const MAX_SIZE = 1600;
+
+// Offscreen canvas for raw capture
+const rawCanvas = document.createElement("canvas");
+const rawCtx = rawCanvas.getContext("2d");
+
+// Blobs for upload
+let lastOriginalBlob = null;
+let lastCorrectedBlob = null;
+
+/* ---------- Helpers ---------- */
+
+function setStatus(message, type) {
+  if (!statusEl) return;
+  statusEl.textContent = message;
+}
+
+function setGalleryStatus(message) {
+  if (!galleryStatusEl) return;
+  galleryStatusEl.textContent = message;
+}
+
+/* ---------- Nav ---------- */
+
+function showCaptureView() {
+  captureView.style.display = "";
+  galleryView.style.display = "none";
+  navCapture.classList.add("active");
+  navGallery.classList.remove("active");
+}
+
+function showGalleryView() {
+  captureView.style.display = "none";
+  galleryView.style.display = "";
+  navCapture.classList.remove("active");
+  navGallery.classList.add("active");
+  stopCamera();
+  loadGallery();
+}
+
+navCapture.addEventListener("click", () => {
+  showCaptureView();
+});
+
+navGallery.addEventListener("click", () => {
+  showGalleryView();
+});
 
 /* ---------- OpenCV runtime hook ---------- */
 
-// opencv.js is loaded before this file, so cv should exist now.
+// Start with capture & save disabled until OpenCV is ready
+captureBtn.disabled = true;
+saveBtn.disabled = true;
+
 if (window.cv) {
   cv.onRuntimeInitialized = () => {
     cvReady = true;
     console.log("OpenCV.js runtime initialized");
+    captureBtn.disabled = false;
+    setStatus(
+      "Image processor ready. Start the camera, align the tag, then tap Capture.",
+      "success"
+    );
   };
+} else {
+  console.warn("OpenCV.js not found – using basic capture.");
+  setStatus(
+    "Advanced processing unavailable. Captures will not be auto-straightened.",
+    "error"
+  );
 }
 
-/* ---------- STATUS HELPERS ---------- */
-
-function setStatus(message, type = "") {
-  statusEl.textContent = message;
-  statusEl.className = "status";
-  if (type) statusEl.classList.add(type);
-}
-
-function setGalleryStatus(message, type = "") {
-  galleryStatusEl.textContent = message;
-  galleryStatusEl.className = "status";
-  if (type) galleryStatusEl.classList.add(type);
-}
-
-/* ---------- NAV TABS ---------- */
-
-function showCaptureView() {
-  navCapture.classList.add("active");
-  navGallery.classList.remove("active");
-  captureView.style.display = "";
-  galleryView.style.display = "none";
-}
-
-function showGalleryView() {
-  navCapture.classList.remove("active");
-  navGallery.classList.add("active");
-  captureView.style.display = "none";
-  galleryView.style.display = "";
-  loadGallery();
-}
-
-navCapture.addEventListener("click", showCaptureView);
-navGallery.addEventListener("click", showGalleryView);
-
-/* ---------- CAMERA / CAPTURE ---------- */
+/* ---------- Camera ---------- */
 
 async function startCamera() {
+  if (!cvReady) {
+    setStatus(
+      "Still loading the image processor. Wait a moment until the message says it's ready, then try again.",
+      "error"
+    );
+    return;
+  }
+
   try {
+    setStatus("Starting camera...");
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "environment" },
       audio: false
     });
 
     video.srcObject = stream;
-    captureBtn.disabled = false;
-    setStatus("Camera started. Capture your inspection tag.", "success");
+    setStatus(
+      "Camera started. Align the tag in the outline and tap Capture.",
+      "success"
+    );
   } catch (err) {
     console.error("Camera error:", err);
     setStatus("Unable to access camera. Check permissions.", "error");
   }
 }
 
+function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    video.srcObject = null;
+  }
+}
+
+startCameraBtn.addEventListener("click", () => {
+  startCamera();
+});
+
+/* ---------- Capture & processing ---------- */
+
 function captureFrame() {
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-  if (!width || !height) {
-    setStatus("Video not ready yet. Try again.", "error");
-    return false;
+  if (!stream) {
+    setStatus("Camera is not active. Start the camera first.", "error");
+    return;
   }
 
-  rawCanvas.width = width;
-  rawCanvas.height = height;
-  rawCtx.drawImage(video, 0, 0, width, height);
+  const vWidth = video.videoWidth;
+  const vHeight = video.videoHeight;
+  if (!vWidth || !vHeight) {
+    setStatus("Camera is not ready yet. Try again in a moment.", "error");
+    return;
+  }
+
+  rawCanvas.width = vWidth;
+  rawCanvas.height = vHeight;
+  rawCtx.drawImage(video, 0, 0, vWidth, vHeight);
 
   hasCapture = true;
   saveBtn.disabled = false;
-
   runDeskewOrFallback();
-  return true;
 }
 
-/* ---------- LOAD IMAGE FROM FILE (desktop & mobile) ---------- */
+function basicCopyToPreview() {
+  const srcW = rawCanvas.width;
+  const srcH = rawCanvas.height;
+  if (!srcW || !srcH) return;
+
+  const ctx = canvas.getContext("2d");
+  const scale = MAX_SIZE / Math.max(srcW, srcH);
+  const targetW = scale < 1 ? Math.round(srcW * scale) : srcW;
+  const targetH = scale < 1 ? Math.round(srcH * scale) : srcH;
+
+  canvas.width = targetW;
+  canvas.height = targetH;
+  ctx.drawImage(rawCanvas, 0, 0, targetW, targetH);
+}
+
+function displayMatOnCanvas(mat) {
+  const gray = mat; // expect CV_8UC1
+
+  const srcW = gray.cols;
+  const srcH = gray.rows;
+  const scale = MAX_SIZE / Math.max(srcW, srcH);
+  const targetW = scale < 1 ? Math.round(srcW * scale) : srcW;
+  const targetH = scale < 1 ? Math.round(srcH * scale) : srcH;
+
+  const resized = new cv.Mat();
+  cv.resize(gray, resized, new cv.Size(targetW, targetH), 0, 0, cv.INTER_AREA);
+
+  canvas.width = targetW;
+  canvas.height = targetH;
+
+  const ctx = canvas.getContext("2d");
+  const imageData = ctx.createImageData(targetW, targetH);
+
+  let idx = 0;
+  for (let y = 0; y < targetH; y++) {
+    for (let x = 0; x < targetW; x++) {
+      const v = resized.ucharPtr(y, x)[0];
+      imageData.data[idx++] = v; // R
+      imageData.data[idx++] = v; // G
+      imageData.data[idx++] = v; // B
+      imageData.data[idx++] = 255; // A
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  resized.delete();
+}
+
+function updateBlobs(callback) {
+  if (!hasCapture) return;
+
+  let pending = 2;
+
+  function done() {
+    pending--;
+    if (pending === 0 && typeof callback === "function") {
+      callback();
+    }
+  }
+
+  rawCanvas.toBlob(
+    (blob) => {
+      lastOriginalBlob = blob;
+      done();
+    },
+    "image/jpeg",
+    0.85
+  );
+
+  canvas.toBlob(
+    (blob) => {
+      lastCorrectedBlob = blob;
+      done();
+    },
+    "image/jpeg",
+    0.85
+  );
+}
+
+function runDeskewOrFallback() {
+  if (!cvReady || !window.cv) {
+    basicCopyToPreview();
+    updateBlobs();
+    setStatus(
+      "Captured. Advanced processing not available, showing uncorrected preview.",
+      "error"
+    );
+    return;
+  }
+
+  try {
+    const src = cv.imread(rawCanvas);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+    const blur = new cv.Mat();
+    cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
+
+    const edges = new cv.Mat();
+    cv.Canny(blur, edges, 50, 150);
+
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(
+      edges,
+      contours,
+      hierarchy,
+      cv.RETR_EXTERNAL,
+      cv.CHAIN_APPROX_SIMPLE
+    );
+
+    let best = null;
+    let bestArea = 0;
+
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt = contours.get(i);
+      const peri = cv.arcLength(cnt, true);
+      const approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+      if (approx.rows === 4) {
+        const area = cv.contourArea(approx);
+        if (area > bestArea) {
+          if (best) best.delete();
+          best = approx;
+          bestArea = area;
+        } else {
+          approx.delete();
+        }
+      } else {
+        approx.delete();
+      }
+      cnt.delete();
+    }
+
+    let outputMat = gray;
+
+    if (best && bestArea > 10000) {
+      // Order the 4 corners
+      const pts = [];
+      for (let i = 0; i < 4; i++) {
+        const x = best.intAt(i, 0);
+        const y = best.intAt(i, 1);
+        pts.push({ x, y });
+      }
+
+      // sort by y, then split into top/bottom
+      pts.sort((a, b) => a.y - b.y);
+      let top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
+      let bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
+
+      const [tl, tr] = top;
+      const [bl, br] = bottom;
+
+      const widthTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+      const widthBottom = Math.hypot(br.x - bl.x, br.y - bl.y);
+      const heightLeft = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+      const heightRight = Math.hypot(br.x - tr.x, br.y - tr.y);
+
+      const dstWidth = Math.round(Math.max(widthTop, widthBottom));
+      const dstHeight = Math.round(Math.max(heightLeft, heightRight));
+
+      const srcTri = cv.matFromArray(
+        4,
+        1,
+        cv.CV_32FC2,
+        [
+          tl.x, tl.y,
+          tr.x, tr.y,
+          bl.x, bl.y,
+          br.x, br.y
+        ]
+      );
+      const dstTri = cv.matFromArray(
+        4,
+        1,
+        cv.CV_32FC2,
+        [
+          0, 0,
+          dstWidth, 0,
+          0, dstHeight,
+          dstWidth, dstHeight
+        ]
+      );
+
+      const M = cv.getPerspectiveTransform(srcTri, dstTri);
+      const warped = new cv.Mat();
+      cv.warpPerspective(gray, warped, M, new cv.Size(dstWidth, dstHeight));
+
+      srcTri.delete();
+      dstTri.delete();
+      M.delete();
+      best.delete();
+
+      displayMatOnCanvas(warped);
+      warped.delete();
+    } else {
+      if (best) best.delete();
+      displayMatOnCanvas(gray);
+    }
+
+    src.delete();
+    gray.delete();
+    blur.delete();
+    edges.delete();
+    contours.delete();
+    hierarchy.delete();
+
+    updateBlobs(() => {
+      setStatus(
+        "Captured, perspective-corrected and converted to grayscale.",
+        "success"
+      );
+    });
+  } catch (err) {
+    console.error("Deskew error:", err);
+    basicCopyToPreview();
+    updateBlobs(() => {
+      setStatus(
+        "Captured, but auto-straighten failed. Showing uncorrected preview.",
+        "error"
+      );
+    });
+  }
+}
+
+captureBtn.addEventListener("click", () => {
+  captureFrame();
+});
+
+/* ---------- Device upload & drag/drop ---------- */
+
+chooseFromDeviceBtn.addEventListener("click", () => {
+  deviceInput.click();
+});
+
+deviceInput.addEventListener("change", () => {
+  const file = deviceInput.files[0];
+  if (file) {
+    loadImageFile(file);
+  }
+});
 
 function loadImageFile(file) {
-  if (!file || !file.type.startsWith("image/")) {
-    setStatus("Please select an image file.", "error");
+  if (!file.type.startsWith("image/")) {
+    setStatus("Please choose an image file.", "error");
     return;
   }
 
@@ -135,315 +424,92 @@ function loadImageFile(file) {
     };
     img.src = reader.result;
   };
-  reader.onerror = () => setStatus("Failed to read file.", "error");
   reader.readAsDataURL(file);
 }
 
-choosePhotoBtn.addEventListener("click", () => fileInput.click());
-
-fileInput.addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (file) loadImageFile(file);
+["dragenter", "dragover"].forEach((evt) => {
+  dropZone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.add("drag-over");
+  });
 });
 
-dropZone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = "copy";
-  dropZone.classList.add("drag-over");
-});
-
-dropZone.addEventListener("dragleave", () => {
-  dropZone.classList.remove("drag-over");
+["dragleave", "drop"].forEach((evt) => {
+  dropZone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.remove("drag-over");
+  });
 });
 
 dropZone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dropZone.classList.remove("drag-over");
   const file = e.dataTransfer.files[0];
-  if (file) loadImageFile(file);
+  if (file) {
+    loadImageFile(file);
+  }
 });
 
-/* ---------- DESKEW / PREVIEW ---------- */
+/* ---------- Upload to server ---------- */
 
-function runDeskewOrFallback() {
-  if (!cvReady || !window.cv) {
-    basicCopyToPreview();
-    setStatus(
-      "Captured. OpenCV still initializing, showing uncorrected preview.",
-      "error"
-    );
-    return;
-  }
-
-  try {
-    autoDeskewWithOpenCV();
-    setStatus(
-      "Captured, perspective-corrected and converted to grayscale.",
-      "success"
-    );
-  } catch (err) {
-    console.error("Deskew error:", err);
-    basicCopyToPreview();
-    setStatus(
-      "Captured, but auto-straighten failed. Showing uncorrected preview.",
-      "error"
-    );
-  }
-}
-
-/* Simple fallback: just scale raw image into preview canvas */
-function basicCopyToPreview() {
-  const srcW = rawCanvas.width;
-  const srcH = rawCanvas.height;
-  let scale = 1;
-  const longSide = Math.max(srcW, srcH);
-  if (longSide > MAX_SIZE) {
-    scale = MAX_SIZE / longSide;
-  }
-  const destW = Math.round(srcW * scale);
-  const destH = Math.round(srcH * scale);
-
-  canvas.width = destW;
-  canvas.height = destH;
-  const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, destW, destH);
-  ctx.drawImage(rawCanvas, 0, 0, destW, destH);
-}
-
-/* --- OpenCV-based automatic perspective correction & grayscale --- */
-
-function autoDeskewWithOpenCV() {
-  if (!cvReady || !window.cv) {
-    throw new Error("OpenCV not ready");
-  }
-
-  let src = cv.imread(rawCanvas);
-  let lab = new cv.Mat();
-  let thresh = new cv.Mat();
-  let opened = new cv.Mat();
-  let contours = new cv.MatVector();
-  let hierarchy = new cv.Mat();
-
-  let channels = new cv.MatVector();
-  let aChannel = null;
-  let kernel = null;
-
-  try {
-    // 1. Convert to LAB for better color separation
-    cv.cvtColor(src, lab, cv.COLOR_RGBA2Lab, 0);
-
-    // 2. Use the A channel to separate tag blue from brown background
-    cv.split(lab, channels);
-    aChannel = channels.get(1);
-
-    // 3. Blur + Otsu threshold to isolate tag
-    cv.GaussianBlur(aChannel, aChannel, new cv.Size(11, 11), 0);
-    cv.threshold(
-      aChannel,
-      thresh,
-      0,
-      255,
-      cv.THRESH_BINARY + cv.THRESH_OTSU
-    );
-
-    // 4. Morphology close to fill gaps
-    kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 25));
-    cv.morphologyEx(thresh, opened, cv.MORPH_CLOSE, kernel);
-
-    // 5. Find external contours
-    cv.findContours(
-      opened,
-      contours,
-      hierarchy,
-      cv.RETR_EXTERNAL,
-      cv.CHAIN_APPROX_SIMPLE
-    );
-
-    if (contours.size() === 0) {
-      throw new Error("No tag region detected.");
-    }
-
-    // 6. Pick largest contour = tag region
-    let maxArea = 0;
-    let bestContour = null;
-
-    for (let i = 0; i < contours.size(); i++) {
-      const cnt = contours.get(i);
-      const area = cv.contourArea(cnt, false);
-      if (area > maxArea) {
-        maxArea = area;
-        bestContour = cnt;
-      }
-    }
-
-    if (!bestContour) {
-      throw new Error("No valid tag contour found.");
-    }
-
-    // 7. Use rotated bounding rect of that contour
-    let rotatedRect = cv.minAreaRect(bestContour);
-    let box = cv.RotatedRect.points(rotatedRect);
-
-    // Build source points from the rotated rectangle vertices
-    let srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      box[0].x, box[0].y,
-      box[1].x, box[1].y,
-      box[2].x, box[2].y,
-      box[3].x, box[3].y
-    ]);
-
-    let w = rotatedRect.size.width;
-    let h = rotatedRect.size.height;
-
-    if (w <= 0 || h <= 0) {
-      srcPts.delete();
-      throw new Error("Invalid rotated rectangle size.");
-    }
-
-    // Maintain portrait orientation
-    if (h < w) {
-      let tmp = w;
-      w = h;
-      h = tmp;
-    }
-
-    // Limit max size
-    const longSide = Math.max(w, h);
-    let scale = 1;
-    if (longSide > MAX_SIZE) {
-      scale = MAX_SIZE / longSide;
-    }
-    const dstW = Math.round(w * scale);
-    const dstH = Math.round(h * scale);
-
-    let dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0, 0,
-      dstW - 1, 0,
-      dstW - 1, dstH - 1,
-      0, dstH - 1
-    ]);
-
-    // 8. Warp to get straightened tag
-    let M = cv.getPerspectiveTransform(srcPts, dstPts);
-    let warped = new cv.Mat();
-    cv.warpPerspective(src, warped, M, new cv.Size(dstW, dstH));
-
-    // 9. Convert warped image to grayscale
-    let warpedGray = new cv.Mat();
-    cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
-
-    // 10. Draw to preview canvas
-    canvas.width = dstW;
-    canvas.height = dstH;
-    cv.imshow(canvas, warpedGray);
-
-    warped.delete();
-    warpedGray.delete();
-    M.delete();
-    srcPts.delete();
-    dstPts.delete();
-  } finally {
-    src.delete();
-    lab.delete();
-    thresh.delete();
-    opened.delete();
-    contours.delete();
-    hierarchy.delete();
-
-    if (aChannel) aChannel.delete();
-    channels.delete();
-    if (kernel) kernel.delete();
-  }
-}
-
-function orderQuadPoints(pts) {
-  const sum = pts.map((p) => p.x + p.y);
-  const diff = pts.map((p) => p.y - p.x);
-
-  const tl = pts[sum.indexOf(Math.min(...sum))];
-  const br = pts[sum.indexOf(Math.max(...sum))];
-  const tr = pts[diff.indexOf(Math.min(...diff))];
-  const bl = pts[diff.indexOf(Math.max(...diff))];
-
-  return [tl, tr, br, bl];
-}
-
-function distance(p1, p2) {
-  const dx = p1.x - p2.x;
-  const dy = p1.y - p2.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-/* ---------- SAVE / UPLOAD ---------- */
-
-function canvasToBlob(canvasEl, type, quality) {
-  return new Promise((resolve, reject) => {
-    canvasEl.toBlob(
-      (blob) => {
-        if (!blob) return reject(new Error("Failed to create blob."));
-        resolve(blob);
-      },
-      type,
-      quality
-    );
-  });
-}
-
-async function savePhoto() {
+function savePhoto() {
   if (!hasCapture) {
-    setStatus("Capture or upload a photo first.", "error");
+    setStatus("Capture or load a tag first.", "error");
     return;
   }
 
-  setStatus("Compressing and uploading photos...");
+  setStatus("Preparing image for upload...");
 
-  try {
-    const originalBlob = await canvasToBlob(rawCanvas, "image/jpeg", 0.95);
-    const correctedBlob = await canvasToBlob(canvas, "image/jpeg", 0.6);
-
-    const formData = new FormData();
-    formData.append("original", originalBlob, "original.jpg");
-    formData.append("corrected", correctedBlob, "corrected.jpg");
-
-    const res = await fetch("/upload", {
-      method: "POST",
-      body: formData
-    });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      setStatus(
-        "Upload failed: " + (errData.error || res.statusText),
-        "error"
-      );
+  updateBlobs(async () => {
+    if (!lastOriginalBlob || !lastCorrectedBlob) {
+      setStatus("Unable to prepare image blobs.", "error");
       return;
     }
 
-    const data = await res.json();
-    setStatus(
-      `Saved pair: original ${formatBytes(
-        data.originalSize
-      )}, corrected ${formatBytes(data.correctedSize)}.`,
-      "success"
-    );
-  } catch (err) {
-    console.error(err);
-    setStatus("Upload error: " + err.message, "error");
-  }
+    try {
+      const formData = new FormData();
+      formData.append("original", lastOriginalBlob, "original.jpg");
+      formData.append("corrected", lastCorrectedBlob, "corrected.jpg");
+
+      const response = await fetch("/upload", {
+        method: "POST",
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`Upload failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.error || "Upload failed.");
+      }
+
+      setStatus(
+        `Saved pair ${data.id}. Original: ${formatBytes(
+          data.originalSize
+        )}, Corrected: ${formatBytes(data.correctedSize)}.`,
+        "success"
+      );
+    } catch (err) {
+      console.error("Upload error:", err);
+      setStatus("Failed to upload images.", "error");
+    }
+  });
 }
 
-/* ---------- GALLERY ---------- */
+saveBtn.addEventListener("click", () => {
+  savePhoto();
+});
+
+/* ---------- Gallery ---------- */
 
 function formatBytes(bytes) {
-  if (!bytes && bytes !== 0) return "";
-  const units = ["B", "KB", "MB", "GB"];
-  let i = 0;
-  let value = bytes;
-  while (value >= 1024 && i < units.length - 1) {
-    value = value / 1024;
-    i++;
-  }
-  return `${value.toFixed(1)} ${units[i]}`;
+  if (bytes == null) return "";
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(2)} MB`;
 }
 
 async function loadGallery() {
@@ -453,13 +519,12 @@ async function loadGallery() {
   try {
     const res = await fetch("/photos");
     if (!res.ok) {
-      setGalleryStatus("Failed to load photos.", "error");
-      return;
+      throw new Error(`Failed with status ${res.status}`);
     }
 
     const items = await res.json();
-    if (!items.length) {
-      setGalleryStatus("No photos archived yet.", "success");
+    if (!Array.isArray(items) || items.length === 0) {
+      setGalleryStatus("No photos saved yet.");
       return;
     }
 
@@ -468,56 +533,43 @@ async function loadGallery() {
 
       const idTd = document.createElement("td");
       idTd.textContent = item.id;
-      tr.appendChild(idTd);
 
-      const originalTd = document.createElement("td");
+      const origTd = document.createElement("td");
       const origImg = document.createElement("img");
       origImg.src = item.originalUrl;
       origImg.alt = `Original ${item.id}`;
       const origSize = document.createElement("div");
-      origSize.className = "size-text";
       origSize.textContent = formatBytes(item.originalSize);
-      originalTd.appendChild(origImg);
-      originalTd.appendChild(origSize);
-      tr.appendChild(originalTd);
+      origTd.appendChild(origImg);
+      origTd.appendChild(origSize);
 
-      const correctedTd = document.createElement("td");
+      const corrTd = document.createElement("td");
       const corrImg = document.createElement("img");
       corrImg.src = item.correctedUrl;
       corrImg.alt = `Corrected ${item.id}`;
       const corrSize = document.createElement("div");
-      corrSize.className = "size-text";
       corrSize.textContent = formatBytes(item.correctedSize);
-      correctedTd.appendChild(corrImg);
-      correctedTd.appendChild(corrSize);
-      tr.appendChild(correctedTd);
+      corrTd.appendChild(corrImg);
+      corrTd.appendChild(corrSize);
+
+      tr.appendChild(idTd);
+      tr.appendChild(origTd);
+      tr.appendChild(corrTd);
 
       photoTableBody.appendChild(tr);
     }
 
-    setGalleryStatus(`Loaded ${items.length} photo set(s).`, "success");
+    setGalleryStatus("");
   } catch (err) {
-    console.error(err);
-    setGalleryStatus("Error loading gallery: " + err.message, "error");
+    console.error("Gallery error:", err);
+    setGalleryStatus("Failed to load photo archive.");
   }
 }
 
-/* ---------- EVENT WIRING ---------- */
-
-startCameraBtn.addEventListener("click", () => {
-  setStatus("Starting camera...");
-  startCamera();
+refreshGalleryBtn.addEventListener("click", () => {
+  loadGallery();
 });
 
-captureBtn.addEventListener("click", () => {
-  captureFrame();
-});
+/* ---------- Initial state ---------- */
 
-saveBtn.addEventListener("click", () => {
-  savePhoto();
-});
-
-refreshGalleryBtn.addEventListener("click", loadGallery);
-
-// Default to Capture tab on load
 showCaptureView();

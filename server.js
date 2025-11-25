@@ -23,17 +23,16 @@ for (const dir of [UPLOAD_BASE, ARCHIVE_FOLDER]) {
   }
 }
 
-// Basic middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve the frontend from /public
+// Frontend
 app.use(express.static(path.join(__dirname, "public")));
 
 // Serve archived image files
 app.use("/files", express.static(ARCHIVE_FOLDER));
 
-// Multer in-memory storage – we write the files ourselves into /archive/<id>/
+// Multer in-memory storage – we write files ourselves
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {

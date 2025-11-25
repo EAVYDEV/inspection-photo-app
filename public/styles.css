@@ -20,209 +20,200 @@ header {
   margin-bottom: 16px;
 }
 
-h1 {
-  margin: 0 0 8px;
+header h1 {
+  margin: 4px 0;
+  font-size: 26px;
+}
+
+header p {
+  margin: 0 0 12px;
+  color: #555;
+  font-size: 14px;
 }
 
 /* Nav tabs */
+
 .nav-tabs {
-  margin-top: 8px;
   display: inline-flex;
   border-radius: 999px;
-  background: #e0e4ea;
+  background: #e4e7ec;
   padding: 4px;
 }
 
 .nav-tab {
   border: none;
   background: transparent;
-  padding: 6px 14px;
+  padding: 8px 18px;
   border-radius: 999px;
   font-size: 14px;
   cursor: pointer;
+  color: #555;
 }
 
 .nav-tab.active {
-  background: #006495;
+  background: #1155cc;
   color: #fff;
 }
 
-/* Always vertical layout so nothing overlaps on mobile */
-main {
-  display: flex;
-  flex-direction: column;
+/* Card */
+
+.card {
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  padding: 16px;
+}
+
+/* Capture layout */
+
+.capture-layout {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
   gap: 16px;
 }
 
-.camera-section,
-.preview-section,
-.gallery-section {
-  background: #fff;
-  border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+.capture-left h2,
+.capture-right h2 {
+  margin-top: 0;
+  margin-bottom: 4px;
+  font-size: 18px;
 }
 
-/* Portrait video container */
-.video-container {
+.hint {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #666;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+button {
+  border-radius: 999px;
+  border: none;
+  padding: 8px 18px;
+  font-size: 14px;
+  cursor: pointer;
+  background: #1155cc;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Drop zone */
+
+.drop-zone {
+  border: 1px dashed #b3b8c2;
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 10px;
+  background: #fafbff;
+}
+
+.drop-zone.drag-over {
+  border-color: #1155cc;
+  background: #e7f0ff;
+}
+
+/* Camera & overlay */
+
+.camera-wrapper {
+  margin-top: 6px;
+}
+
+.camera-frame {
   position: relative;
-  width: 100%;
   background: #000;
-  border-radius: 8px;
+  border-radius: 16px;
   overflow: hidden;
-  margin-bottom: 12px;
+  max-width: 100%;
 }
 
-.video-container.portrait {
-  /* roughly 3:4 portrait ratio */
-  padding-top: 133%;
+/* Portrait-ish viewport */
+.camera-frame::before {
+  content: "";
+  display: block;
+  padding-top: 160%; /* tall portrait */
 }
 
-video {
+.camera-frame video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
-  background: #000;
+  object-fit: cover;
 }
 
-/* NEW: overlay to guide tag alignment */
-.video-overlay {
+/* Tag overlay */
+
+.tag-overlay {
   position: absolute;
   inset: 0;
   display: flex;
-  justify-content: center;
   align-items: center;
-  pointer-events: none; /* let taps go through to underlying video/buttons */
+  justify-content: center;
+  pointer-events: none;
 }
 
 .tag-outline {
-  border: 2px dashed rgba(255, 255, 255, 0.9);
-  border-radius: 10px;
-  width: 55%;            /* horizontal size of tag outline */
-  aspect-ratio: 0.5 / 1; /* tall tag shape (width : height) */
+  width: 46%;
+  height: 72%;
+  border-radius: 16px;
+  border: 3px dashed rgba(255, 255, 255, 0.9);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
 }
 
-/* optional "hole" at top of tag outline */
-.tag-outline::before {
-  content: "";
-  position: absolute;
-  top: 8%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 10%;
-  aspect-ratio: 1 / 1;
-  border-radius: 999px;
-  border: 2px solid rgba(255, 255, 255, 0.9);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
-}
+/* Preview canvas */
 
-.tag-hint {
-  position: absolute;
-  bottom: 6%;
-  left: 50%;
-  transform: translateX(-50%);
-  color: #f5f5f5;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.45);
-}
-
-/* Controls & buttons */
-.controls {
+.preview-wrapper {
+  border-radius: 16px;
+  background: #f3f4f8;
+  padding: 8px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
+  justify-content: center;
+  align-items: center;
+  min-height: 260px;
 }
 
-button {
-  flex: 1 1 calc(33% - 8px);
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: none;
-  cursor: pointer;
-  font-size: 14px;
-  background: #006495;
-  color: white;
-  font-weight: 500;
+.preview-wrapper canvas {
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: 12px;
+  background: #e0e4ec;
 }
 
-button[disabled] {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Secondary / neutral buttons */
-button.secondary {
-  background: #e0e4ea;
-  color: #222;
-}
-
-/* Full-width variant */
-button.full-width {
-  flex: 1 1 100%;
-}
-
-/* Upload section */
-.upload-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.drop-zone {
-  border: 2px dashed #b0b7c3;
-  border-radius: 8px;
-  padding: 12px;
-  text-align: center;
-  font-size: 13px;
-  color: #555;
-  background: #f8fafc;
-}
-
-.drop-zone.drag-over {
-  border-color: #006495;
-  background: #e0f3ff;
-}
-
-/* Preview */
-.preview-section h2,
-.gallery-section h2 {
-  margin-top: 0;
-}
-
-canvas {
-  width: 100%;
-  max-height: 480px;
-  background: #eee;
-  border-radius: 8px;
-}
+/* Status */
 
 .status {
   margin-top: 8px;
-  font-size: 14px;
+  font-size: 13px;
+  color: #555;
 }
 
-.status.error {
-  color: #c0392b;
-}
+/* Gallery */
 
-.status.success {
-  color: #1e8449;
-}
-
-/* Gallery table */
 .gallery-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.gallery-header h2 {
+  margin: 0;
 }
 
 .table-wrapper {
@@ -244,36 +235,39 @@ canvas {
 }
 
 .photo-table th {
-  background: #f0f2f5;
+  background: #f3f4f7;
   font-weight: 600;
 }
 
 .photo-table img {
   max-width: 140px;
-  max-height: 200px;
+  border-radius: 10px;
   display: block;
-  border-radius: 4px;
-  border: 1px solid #ddd;
 }
 
-.subtext {
-  font-size: 11px;
-  color: #666;
-}
-
-.size-text {
-  margin-top: 4px;
+.subhead {
   font-size: 12px;
   color: #666;
 }
 
 /* Mobile tweaks */
-@media (max-width: 700px) {
-  button {
-    flex: 1 1 100%;
+
+@media (max-width: 800px) {
+  .capture-layout {
+    grid-template-columns: 1fr;
   }
 
+  button {
+    flex: 1 1 auto;
+  }
+
+  .preview-wrapper {
+    min-height: 220px;
+  }
+}
+
+@media (max-width: 600px) {
   .photo-table img {
-    max-width: 100px;
+    max-width: 110px;
   }
 }
