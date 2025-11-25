@@ -16,33 +16,36 @@ const UPLOAD_BASE = isVercel
 
 const ARCHIVE_FOLDER = path.join(UPLOAD_BASE, "archive");
 
-// Ensure folders exist
-if (!fs.existsSync(UPLOAD_BASE)) {
-  fs.mkdirSync(UPLOAD_BASE, { recursive: true });
-}
-if (!fs.existsSync(ARCHIVE_FOLDER)) {
-  fs.mkdirSync(ARCHIVE_FOLDER, { recursive: true });
+// Ensure base folders exist
+for (const dir of [UPLOAD_BASE, ARCHIVE_FOLDER]) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 }
 
-// Multer in-memory storage; we write the files ourselves
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB max per file
-});
+// Basic middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Serve static frontend
+// Serve the frontend from /public
 app.use(express.static(path.join(__dirname, "public")));
 
-// Serve archived files so the gallery can display them
+// Serve archived image files
 app.use("/files", express.static(ARCHIVE_FOLDER));
+
+// Multer in-memory storage – we write the files ourselves into /archive/<id>/
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024 // 20 MB per image
+  }
+});
 
 /**
  * POST /upload
- * Accepts two files:
- *  - original: raw capture (full resolution, before rotation/compress)
- *  - corrected: rotated + compressed image
- *
- * Saves each pair into: ARCHIVE_FOLDER/<timestamp>/original.jpg + corrected.jpg
+ * Expects form-data fields:
+ *   - original: original image
+ *   - corrected: deskewed / processed image
  */
 app.post(
   "/upload",
@@ -50,77 +53,79 @@ app.post(
     { name: "original", maxCount: 1 },
     { name: "corrected", maxCount: 1 }
   ]),
-  (req, res) => {
+  async (req, res) => {
     try {
-      const originalFile = req.files["original"]?.[0];
-      const correctedFile = req.files["corrected"]?.[0];
+      const originalFile = req.files?.original?.[0];
+      const correctedFile = req.files?.corrected?.[0];
 
       if (!originalFile || !correctedFile) {
         return res.status(400).json({
-          error: "Both 'original' and 'corrected' files are required."
+          error: "Both 'original' and 'corrected' images are required."
         });
       }
 
-      const timestamp = Date.now().toString();
-      const photoDir = path.join(ARCHIVE_FOLDER, timestamp);
-      fs.mkdirSync(photoDir, { recursive: true });
+      const id = Date.now().toString();
+      const pairDir = path.join(ARCHIVE_FOLDER, id);
+      await fs.promises.mkdir(pairDir, { recursive: true });
 
-      const originalFileName = "original.jpg";
-      const correctedFileName = "corrected.jpg";
+      const originalPath = path.join(pairDir, "original.jpg");
+      const correctedPath = path.join(pairDir, "corrected.jpg");
 
-      const originalPath = path.join(photoDir, originalFileName);
-      const correctedPath = path.join(photoDir, correctedFileName);
+      await fs.promises.writeFile(originalPath, originalFile.buffer);
+      await fs.promises.writeFile(correctedPath, correctedFile.buffer);
 
-      fs.writeFileSync(originalPath, originalFile.buffer);
-      fs.writeFileSync(correctedPath, correctedFile.buffer);
+      const [originalStat, correctedStat] = await Promise.all([
+        fs.promises.stat(originalPath),
+        fs.promises.stat(correctedPath)
+      ]);
 
-      console.log(`Saved pair to: ${photoDir}`);
-
-      const originalSize = originalFile.size;
-      const correctedSize = correctedFile.size;
-
-      res.json({
-        id: timestamp,
-        originalUrl: `/files/${timestamp}/${originalFileName}`,
-        correctedUrl: `/files/${timestamp}/${correctedFileName}`,
-        originalSize,
-        correctedSize
+      return res.json({
+        success: true,
+        id,
+        originalUrl: `/files/${id}/original.jpg`,
+        correctedUrl: `/files/${id}/corrected.jpg`,
+        originalSize: originalStat.size,
+        correctedSize: correctedStat.size
       });
     } catch (err) {
       console.error("Upload error:", err);
-      res.status(500).json({ error: "Server error while saving files." });
+      return res.status(500).json({ error: "Failed to save images." });
     }
   }
 );
 
 /**
  * GET /photos
- * Returns all archived photo pairs and their file sizes.
+ * Returns list of all saved pairs in /archive
  */
-app.get("/photos", (req, res) => {
+app.get("/photos", async (req, res) => {
   try {
-    const items = [];
-
     if (!fs.existsSync(ARCHIVE_FOLDER)) {
-      return res.json(items);
+      return res.json([]);
     }
 
-    const entries = fs.readdirSync(ARCHIVE_FOLDER, { withFileTypes: true });
+    const entries = await fs.promises.readdir(ARCHIVE_FOLDER, {
+      withFileTypes: true
+    });
+
+    const items = [];
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
       const id = entry.name;
-      const dirPath = path.join(ARCHIVE_FOLDER, id);
-      const originalPath = path.join(dirPath, "original.jpg");
-      const correctedPath = path.join(dirPath, "corrected.jpg");
+      const pairDir = path.join(ARCHIVE_FOLDER, id);
+      const originalPath = path.join(pairDir, "original.jpg");
+      const correctedPath = path.join(pairDir, "corrected.jpg");
 
       if (!fs.existsSync(originalPath) || !fs.existsSync(correctedPath)) {
         continue;
       }
 
-      const originalStat = fs.statSync(originalPath);
-      const correctedStat = fs.statSync(correctedPath);
+      const [originalStat, correctedStat] = await Promise.all([
+        fs.promises.stat(originalPath),
+        fs.promises.stat(correctedPath)
+      ]);
 
       items.push({
         id,
@@ -134,10 +139,10 @@ app.get("/photos", (req, res) => {
     // Newest first
     items.sort((a, b) => Number(b.id) - Number(a.id));
 
-    res.json(items);
+    return res.json(items);
   } catch (err) {
-    console.error("Error reading photos:", err);
-    res.status(500).json({ error: "Failed to read photo archive." });
+    console.error("Error reading photo archive:", err);
+    return res.status(500).json({ error: "Failed to read photo archive." });
   }
 });
 
