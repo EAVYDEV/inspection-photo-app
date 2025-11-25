@@ -325,16 +325,21 @@ window.addEventListener("DOMContentLoaded", () => {
     if (w <= 0 || h <= 0) return null;
     return { x, y, w, h };
   }
-
+  function distance(p1, p2) {
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  
   /* --- OpenCV-based automatic perspective correction & grayscale --- */
 
   function autoDeskewWithOpenCV() {
     if (!cvReady || !window.cv) {
       return false;
     }
-
+  
     const src = cv.imread(rawCanvas);
-
+  
     // Restrict to overlay region for more reliable detection
     const roiRect = computeTagRoiRect();
     let roi = src;
@@ -344,22 +349,23 @@ window.addEventListener("DOMContentLoaded", () => {
       roi = src.roi(r);
       roiIsSub = true;
     }
-
+  
     const gray = new cv.Mat();
     const blur = new cv.Mat();
     const edges = new cv.Mat();
     const contours = new cv.MatVector();
     const hierarchy = new cv.Mat();
-
+  
     let warped = null;
     let warpedGray = null;
     let success = false;
-
+  
     try {
+      // 1. Edge detection in the ROI
       cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY, 0);
       cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
       cv.Canny(blur, edges, 50, 150);
-
+  
       cv.findContours(
         edges,
         contours,
@@ -367,13 +373,13 @@ window.addEventListener("DOMContentLoaded", () => {
         cv.RETR_EXTERNAL,
         cv.CHAIN_APPROX_SIMPLE
       );
-
+  
       if (contours.size() === 0) {
         basicCopyToPreview();
         return false;
       }
-
-      // pick largest contour
+  
+      // 2. Pick the largest contour
       let bestIdx = 0;
       let bestArea = 0;
       for (let i = 0; i < contours.size(); i++) {
@@ -384,59 +390,83 @@ window.addEventListener("DOMContentLoaded", () => {
           bestIdx = i;
         }
       }
-
+  
       const bestContour = contours.get(bestIdx);
+  
+      // 3. Minimum-area rectangle around that contour
       const rotatedRect = cv.minAreaRect(bestContour);
-      const box = cv.RotatedRect.points(rotatedRect);
-
-      const srcPtsArr = [];
-      for (let i = 0; i < box.length; i++) {
-        srcPtsArr.push(box[i].x, box[i].y);
-      }
-      const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, srcPtsArr);
-
-      let w = rotatedRect.size.width;
-      let h = rotatedRect.size.height;
-      if (h < w) {
-        const tmp = w;
-        w = h;
-        h = tmp;
-      }
-
-      if (w <= 0 || h <= 0) {
+      const box = cv.RotatedRect.points(rotatedRect); // array of 4 cv.Point
+  
+      // 4. Convert to plain {x,y} and order points:
+      //    top-left, top-right, bottom-right, bottom-left
+      let pts = box.map((p) => ({ x: p.x, y: p.y }));
+  
+      // sort by Y (top to bottom)
+      pts.sort((a, b) => a.y - b.y);
+      const top = pts.slice(0, 2);
+      const bottom = pts.slice(2, 4);
+  
+      // within each row, sort by X (left to right)
+      top.sort((a, b) => a.x - b.x);
+      bottom.sort((a, b) => a.x - b.x);
+  
+      const tl = top[0];
+      const tr = top[1];
+      const bl = bottom[0];
+      const br = bottom[1];
+  
+      // 5. Compute target width/height from edges
+      const widthA = distance(br, bl);
+      const widthB = distance(tr, tl);
+      let maxWidth = Math.max(widthA, widthB);
+  
+      const heightA = distance(tr, br);
+      const heightB = distance(tl, bl);
+      let maxHeight = Math.max(heightA, heightB);
+  
+      if (maxWidth <= 0 || maxHeight <= 0) {
         basicCopyToPreview();
-        srcPts.delete();
         return false;
       }
-
-      const longSide = Math.max(w, h);
+  
+      // Limit size to MAX_SIZE to keep file small
+      const longSide = Math.max(maxWidth, maxHeight);
       let scale = 1;
       if (longSide > MAX_SIZE) {
         scale = MAX_SIZE / longSide;
       }
-      const dstW = Math.round(w * scale);
-      const dstH = Math.round(h * scale);
-
+      const dstW = Math.round(maxWidth * scale);
+      const dstH = Math.round(maxHeight * scale);
+  
+      // 6. Build perspective transform using ordered corners
+      const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+        tl.x, tl.y,
+        tr.x, tr.y,
+        br.x, br.y,
+        bl.x, bl.y
+      ]);
+  
       const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
         0, 0,
         dstW - 1, 0,
         dstW - 1, dstH - 1,
         0, dstH - 1
       ]);
-
+  
       const M = cv.getPerspectiveTransform(srcPts, dstPts);
       warped = new cv.Mat();
       cv.warpPerspective(roi, warped, M, new cv.Size(dstW, dstH));
-
+  
+      // 7. Convert warped image to grayscale
       warpedGray = new cv.Mat();
       cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
-
+  
       canvas.width = dstW;
       canvas.height = dstH;
       cv.imshow(canvas, warpedGray);
-
+  
       success = true;
-
+  
       M.delete();
       srcPts.delete();
       dstPts.delete();
@@ -451,11 +481,10 @@ window.addEventListener("DOMContentLoaded", () => {
       if (warped) warped.delete();
       if (warpedGray) warpedGray.delete();
     }
-
+  
     return success;
   }
-
-  /* ---------- Save / upload ---------- */
+    /* ---------- Save / upload ---------- */
 
   function canvasToBlob(canvasEl, type, quality) {
     return new Promise((resolve, reject) => {
