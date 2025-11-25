@@ -18,23 +18,23 @@ const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
 const choosePhotoBtn = document.getElementById("choosePhotoBtn");
 
-// Tag alignment overlay element to compute ROI
+// Tag overlay element (for ROI)
 const tagOutline = document.querySelector(".tag-outline");
 
-// Hidden raw canvas to hold original frame / uploaded image
+// Hidden raw canvas
 const rawCanvas = document.createElement("canvas");
 const rawCtx = rawCanvas.getContext("2d");
 
+// State
 let stream = null;
 let hasCapture = false;
 let cvReady = false;
 
-// Limit max size for compression (longest side)
+// Max preview / save dimension
 const MAX_SIZE = 1600;
 
-/* ---------- OpenCV runtime hook ---------- */
+/* ---------- OpenCV init ---------- */
 
-// opencv.js is loaded before this file, so cv should exist now.
 if (window.cv) {
   cv.onRuntimeInitialized = () => {
     cvReady = true;
@@ -42,7 +42,7 @@ if (window.cv) {
   };
 }
 
-/* ---------- STATUS HELPERS ---------- */
+/* ---------- Status helpers ---------- */
 
 function setStatus(message, type = "") {
   statusEl.textContent = message;
@@ -56,7 +56,7 @@ function setGalleryStatus(message, type = "") {
   if (type) galleryStatusEl.classList.add(type);
 }
 
-/* ---------- NAV TABS ---------- */
+/* ---------- Nav tabs ---------- */
 
 function showCaptureView() {
   navCapture.classList.add("active");
@@ -76,29 +76,67 @@ function showGalleryView() {
 navCapture.addEventListener("click", showCaptureView);
 navGallery.addEventListener("click", showGalleryView);
 
-/* ---------- CAMERA / CAPTURE ---------- */
+/* ---------- Camera / capture ---------- */
 
 async function startCamera() {
+  // Defensive check: is camera API available?
+  if (
+    !navigator.mediaDevices ||
+    typeof navigator.mediaDevices.getUserMedia !== "function"
+  ) {
+    setStatus(
+      "Camera access is not supported in this browser / context.",
+      "error"
+    );
+    return;
+  }
+
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
+    const constraints = {
       video: { facingMode: "environment" },
       audio: false
-    });
+    };
 
+    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    // Stop any existing stream just in case
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+    }
+
+    stream = newStream;
     video.srcObject = stream;
+
     captureBtn.disabled = false;
-    setStatus("Camera started. Capture your inspection tag.", "success");
+    setStatus("Camera started. Align tag inside outline and tap Capture.", "success");
   } catch (err) {
     console.error("Camera error:", err);
-    setStatus("Unable to access camera. Check permissions.", "error");
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      setStatus(
+        "Camera permission was denied. Enable camera access in your browser settings and reload.",
+        "error"
+      );
+    } else if (err.name === "NotFoundError" || err.name === "OverconstrainedError") {
+      setStatus(
+        "No suitable camera found on this device.",
+        "error"
+      );
+    } else {
+      setStatus("Unable to access camera: " + err.message, "error");
+    }
   }
 }
 
 function captureFrame() {
+  if (!stream) {
+    setStatus("Camera is not running. Tap Start Camera first.", "error");
+    return false;
+  }
+
   const width = video.videoWidth;
   const height = video.videoHeight;
   if (!width || !height) {
-    setStatus("Video not ready yet. Try again.", "error");
+    setStatus("Camera is still initializing. Try capture again.", "error");
     return false;
   }
 
@@ -113,7 +151,7 @@ function captureFrame() {
   return true;
 }
 
-/* ---------- LOAD IMAGE FROM FILE (desktop & mobile) ---------- */
+/* ---------- Device upload / drag & drop ---------- */
 
 function loadImageFile(file) {
   if (!file || !file.type.startsWith("image/")) {
@@ -133,9 +171,7 @@ function loadImageFile(file) {
       runDeskewOrFallback();
       setStatus("Image loaded from device and processed.", "success");
     };
-    img.onerror = () => {
-      setStatus("Failed to load image.", "error");
-    };
+    img.onerror = () => setStatus("Failed to load image.", "error");
     img.src = reader.result;
   };
   reader.onerror = () => setStatus("Failed to read file.", "error");
@@ -166,200 +202,7 @@ dropZone.addEventListener("drop", (e) => {
   if (file) loadImageFile(file);
 });
 
-/* ---------- ROI-BASED DESKEW / PREVIEW ---------- */
-
-/**
- * Calculate the region of interest of the tag outline within the raw canvas.
- * It uses the bounding client rect of the .tag-outline overlaid on the video
- * element and translates it into pixel coordinates corresponding to rawCanvas.
- * Returns an object { x, y, w, h } or null if the overlay or video metrics
- * are not available.
- */
-function computeTagRoiRect() {
-  if (!tagOutline || !video.videoWidth || !video.videoHeight) {
-    return null;
-  }
-
-  const videoRect = video.getBoundingClientRect();
-  const outlineRect = tagOutline.getBoundingClientRect();
-
-  // Determine scaling factors from DOM coordinates to raw canvas pixel space
-  const scaleX = rawCanvas.width / videoRect.width;
-  const scaleY = rawCanvas.height / videoRect.height;
-
-  // Compute pixel coordinates relative to raw canvas
-  const x = Math.max(
-    0,
-    Math.round((outlineRect.left - videoRect.left) * scaleX)
-  );
-  const y = Math.max(
-    0,
-    Math.round((outlineRect.top - videoRect.top) * scaleY)
-  );
-  const w = Math.min(
-    rawCanvas.width - x,
-    Math.round(outlineRect.width * scaleX)
-  );
-  const h = Math.min(
-    rawCanvas.height - y,
-    Math.round(outlineRect.height * scaleY)
-  );
-
-  if (w <= 0 || h <= 0) {
-    return null;
-  }
-
-  return { x, y, w, h };
-}
-
-/* --- OpenCV-based automatic perspective correction & grayscale --- */
-
-function autoDeskewWithOpenCV() {
-  if (!cvReady || !window.cv) {
-    throw new Error("OpenCV not ready");
-  }
-
-  // Read the raw frame from the hidden canvas
-  const src = cv.imread(rawCanvas);
-  let roi = null;
-  let roiIsSub = false;
-
-  // Mat containers
-  const gray = new cv.Mat();
-  const blur = new cv.Mat();
-  const edges = new cv.Mat();
-  const contours = new cv.MatVector();
-  const hierarchy = new cv.Mat();
-
-  // Flag to indicate if a warp happened
-  let warpSucceeded = false;
-
-  try {
-    // Determine the region of interest based on the tag overlay
-    const rect = computeTagRoiRect();
-    if (rect) {
-      const r = new cv.Rect(rect.x, rect.y, rect.w, rect.h);
-      roi = src.roi(r);
-      roiIsSub = true;
-    } else {
-      roi = src.clone();
-    }
-
-    // Convert ROI to grayscale
-    cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY, 0);
-
-    // Blur to reduce noise
-    cv.GaussianBlur(gray, blur, new cv.Size(7, 7), 0);
-
-    // Detect edges
-    cv.Canny(blur, edges, 50, 150);
-
-    // Find all external contours
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let bestContour = null;
-    let bestArea = 0;
-    // Choose the largest contour by area
-    for (let i = 0; i < contours.size(); i++) {
-      const cnt = contours.get(i);
-      const area = cv.contourArea(cnt, false);
-      if (area > bestArea) {
-        bestArea = area;
-        if (bestContour) bestContour.delete();
-        bestContour = cnt;
-      } else {
-        cnt.delete();
-      }
-    }
-
-    if (!bestContour || bestArea <= 0) {
-      // No contour found: just display grayscale ROI
-      displayMatOnCanvas(gray);
-      return false;
-    }
-
-    // Compute the rotated bounding rectangle of the largest contour
-    const rotatedRect = cv.minAreaRect(bestContour);
-    const box = cv.RotatedRect.points(rotatedRect);
-
-    // Create array of the 4 corner coordinates
-    const srcPtsArr = [];
-    for (let i = 0; i < box.length; i++) {
-      srcPtsArr.push(box[i].x);
-      srcPtsArr.push(box[i].y);
-    }
-    const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, srcPtsArr);
-
-    let w = rotatedRect.size.width;
-    let h = rotatedRect.size.height;
-    if (w <= 0 || h <= 0) {
-      srcPts.delete();
-      displayMatOnCanvas(gray);
-      return false;
-    }
-
-    // Force portrait orientation (height >= width)
-    if (h < w) {
-      const tmp = w;
-      w = h;
-      h = tmp;
-    }
-
-    // Limit output so its longest side does not exceed MAX_SIZE
-    const longSide = Math.max(w, h);
-    let scale = 1;
-    if (longSide > MAX_SIZE) {
-      scale = MAX_SIZE / longSide;
-    }
-    const dstW = Math.round(w * scale);
-    const dstH = Math.round(h * scale);
-
-    // Prepare destination points (axis-aligned rectangle)
-    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0, 0,
-      dstW - 1, 0,
-      dstW - 1, dstH - 1,
-      0, dstH - 1
-    ]);
-
-    // Apply perspective transformation to obtain a straightened tag
-    const M = cv.getPerspectiveTransform(srcPts, dstPts);
-    const warped = new cv.Mat();
-    cv.warpPerspective(roi, warped, M, new cv.Size(dstW, dstH));
-
-    // Convert warped image to grayscale (in case warp produces a color image)
-    const warpedGray = new cv.Mat();
-    cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
-
-    // Draw warped grayscale image to preview canvas
-    canvas.width = dstW;
-    canvas.height = dstH;
-    cv.imshow(canvas, warpedGray);
-
-    warpSucceeded = true;
-
-    // Clean up
-    warped.delete();
-    warpedGray.delete();
-    M.delete();
-    srcPts.delete();
-    dstPts.delete();
-    if (bestContour) bestContour.delete();
-
-    return warpSucceeded;
-  } finally {
-    // Free up allocated matrices
-    if (roiIsSub && roi) {
-      roi.delete();
-    }
-    src.delete();
-    gray.delete();
-    blur.delete();
-    edges.delete();
-    contours.delete();
-    hierarchy.delete();
-  }
-}
+/* ---------- DESKEW / PREVIEW ---------- */
 
 function runDeskewOrFallback() {
   if (!cvReady || !window.cv) {
@@ -372,8 +215,8 @@ function runDeskewOrFallback() {
   }
 
   try {
-    const didWarp = autoDeskewWithOpenCV();
-    if (didWarp) {
+    const warped = autoDeskewWithOpenCV();
+    if (warped) {
       setStatus(
         "Captured and auto-straightened. Converted to grayscale.",
         "success"
@@ -394,12 +237,14 @@ function runDeskewOrFallback() {
   }
 }
 
-/* Simple fallback: just scale raw image into preview canvas */
+/* Simple fallback: just copy raw image into preview canvas */
 function basicCopyToPreview() {
   const srcW = rawCanvas.width;
   const srcH = rawCanvas.height;
-  let scale = 1;
+  if (!srcW || !srcH) return;
+
   const longSide = Math.max(srcW, srcH);
+  let scale = 1;
   if (longSide > MAX_SIZE) {
     scale = MAX_SIZE / longSide;
   }
@@ -408,18 +253,176 @@ function basicCopyToPreview() {
 
   canvas.width = destW;
   canvas.height = destH;
+
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, destW, destH);
   ctx.drawImage(rawCanvas, 0, 0, destW, destH);
 }
 
-function distance(p1, p2) {
-  const dx = p1.x - p2.x;
-  const dy = p1.y - p2.y;
-  return Math.sqrt(dx * dx + dy * dy);
+/* --- Helper: compute ROI from tag overlay --- */
+
+function computeTagRoiRect() {
+  if (!tagOutline || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+
+  const videoRect = video.getBoundingClientRect();
+  const outlineRect = tagOutline.getBoundingClientRect();
+
+  const scaleX = rawCanvas.width / videoRect.width;
+  const scaleY = rawCanvas.height / videoRect.height;
+
+  const x = Math.max(
+    0,
+    Math.round((outlineRect.left - videoRect.left) * scaleX)
+  );
+  const y = Math.max(
+    0,
+    Math.round((outlineRect.top - videoRect.top) * scaleY)
+  );
+  const w = Math.min(
+    rawCanvas.width - x,
+    Math.round(outlineRect.width * scaleX)
+  );
+  const h = Math.min(
+    rawCanvas.height - y,
+    Math.round(outlineRect.height * scaleY)
+  );
+
+  if (w <= 0 || h <= 0) return null;
+  return { x, y, w, h };
 }
 
-/* ---------- SAVE / UPLOAD ---------- */
+/* --- OpenCV-based automatic perspective correction & grayscale --- */
+
+function autoDeskewWithOpenCV() {
+  if (!cvReady || !window.cv) {
+    return false;
+  }
+
+  const src = cv.imread(rawCanvas);
+
+  // Restrict to overlay region for more reliable detection
+  const roiRect = computeTagRoiRect();
+  let roi = src;
+  let roiIsSub = false;
+  if (roiRect) {
+    const r = new cv.Rect(roiRect.x, roiRect.y, roiRect.w, roiRect.h);
+    roi = src.roi(r);
+    roiIsSub = true;
+  }
+
+  const gray = new cv.Mat();
+  const blur = new cv.Mat();
+  const edges = new cv.Mat();
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+
+  let warped = null;
+  let warpedGray = null;
+  let success = false;
+
+  try {
+    cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY, 0);
+    cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
+    cv.Canny(blur, edges, 50, 150);
+
+    cv.findContours(
+      edges,
+      contours,
+      hierarchy,
+      cv.RETR_EXTERNAL,
+      cv.CHAIN_APPROX_SIMPLE
+    );
+
+    if (contours.size() === 0) {
+      basicCopyToPreview();
+      return false;
+    }
+
+    // pick largest contour
+    let bestIdx = 0;
+    let bestArea = 0;
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt = contours.get(i);
+      const a = cv.contourArea(cnt, false);
+      if (a > bestArea) {
+        bestArea = a;
+        bestIdx = i;
+      }
+    }
+
+    const bestContour = contours.get(bestIdx);
+    const rotatedRect = cv.minAreaRect(bestContour);
+    const box = cv.RotatedRect.points(rotatedRect);
+
+    const srcPtsArr = [];
+    for (let i = 0; i < box.length; i++) {
+      srcPtsArr.push(box[i].x, box[i].y);
+    }
+    const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, srcPtsArr);
+
+    let w = rotatedRect.size.width;
+    let h = rotatedRect.size.height;
+    if (h < w) {
+      const tmp = w;
+      w = h;
+      h = tmp;
+    }
+
+    if (w <= 0 || h <= 0) {
+      basicCopyToPreview();
+      srcPts.delete();
+      return false;
+    }
+
+    const longSide = Math.max(w, h);
+    let scale = 1;
+    if (longSide > MAX_SIZE) {
+      scale = MAX_SIZE / longSide;
+    }
+    const dstW = Math.round(w * scale);
+    const dstH = Math.round(h * scale);
+
+    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0,
+      dstW - 1, 0,
+      dstW - 1, dstH - 1,
+      0, dstH - 1
+    ]);
+
+    const M = cv.getPerspectiveTransform(srcPts, dstPts);
+    warped = new cv.Mat();
+    cv.warpPerspective(roi, warped, M, new cv.Size(dstW, dstH));
+
+    warpedGray = new cv.Mat();
+    cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
+
+    canvas.width = dstW;
+    canvas.height = dstH;
+    cv.imshow(canvas, warpedGray);
+
+    success = true;
+
+    M.delete();
+    srcPts.delete();
+    dstPts.delete();
+  } finally {
+    if (roiIsSub && roi) roi.delete();
+    src.delete();
+    gray.delete();
+    blur.delete();
+    edges.delete();
+    contours.delete();
+    hierarchy.delete();
+    if (warped) warped.delete();
+    if (warpedGray) warpedGray.delete();
+  }
+
+  return success;
+}
+
+/* ---------- Save / upload ---------- */
 
 function canvasToBlob(canvasEl, type, quality) {
   return new Promise((resolve, reject) => {
@@ -457,10 +460,7 @@ async function savePhoto() {
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      setStatus(
-        "Upload failed: " + (errData.error || res.statusText),
-        "error"
-      );
+      setStatus("Upload failed: " + (errData.error || res.statusText), "error");
       return;
     }
 
@@ -477,15 +477,15 @@ async function savePhoto() {
   }
 }
 
-/* ---------- GALLERY ---------- */
+/* ---------- Gallery ---------- */
 
 function formatBytes(bytes) {
-  if (!bytes && bytes !== 0) return "";
+  if (bytes == null) return "";
   const units = ["B", "KB", "MB", "GB"];
   let i = 0;
   let value = bytes;
   while (value >= 1024 && i < units.length - 1) {
-    value = value / 1024;
+    value /= 1024;
     i++;
   }
   return `${value.toFixed(1)} ${units[i]}`;
@@ -503,7 +503,7 @@ async function loadGallery() {
     }
 
     const items = await res.json();
-    if (!items.length) {
+    if (!Array.isArray(items) || items.length === 0) {
       setGalleryStatus("No photos archived yet.", "success");
       return;
     }
@@ -515,27 +515,27 @@ async function loadGallery() {
       idTd.textContent = item.id;
       tr.appendChild(idTd);
 
-      const originalTd = document.createElement("td");
+      const origTd = document.createElement("td");
       const origImg = document.createElement("img");
       origImg.src = item.originalUrl;
       origImg.alt = `Original ${item.id}`;
       const origSize = document.createElement("div");
       origSize.className = "size-text";
       origSize.textContent = formatBytes(item.originalSize);
-      originalTd.appendChild(origImg);
-      originalTd.appendChild(origSize);
-      tr.appendChild(originalTd);
+      origTd.appendChild(origImg);
+      origTd.appendChild(origSize);
+      tr.appendChild(origTd);
 
-      const correctedTd = document.createElement("td");
+      const corrTd = document.createElement("td");
       const corrImg = document.createElement("img");
       corrImg.src = item.correctedUrl;
       corrImg.alt = `Corrected ${item.id}`;
       const corrSize = document.createElement("div");
       corrSize.className = "size-text";
       corrSize.textContent = formatBytes(item.correctedSize);
-      correctedTd.appendChild(corrImg);
-      correctedTd.appendChild(corrSize);
-      tr.appendChild(correctedTd);
+      corrTd.appendChild(corrImg);
+      corrTd.appendChild(corrSize);
+      tr.appendChild(corrTd);
 
       photoTableBody.appendChild(tr);
     }
@@ -547,7 +547,7 @@ async function loadGallery() {
   }
 }
 
-/* ---------- EVENT WIRING ---------- */
+/* ---------- Event wiring ---------- */
 
 startCameraBtn.addEventListener("click", () => {
   setStatus("Starting camera...");
