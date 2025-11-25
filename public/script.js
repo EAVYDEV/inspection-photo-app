@@ -1,7 +1,4 @@
 window.addEventListener("DOMContentLoaded", () => {
-  const startCameraBtn = document.getElementById("startCameraBtn");
-  const captureBtn = document.getElementById("captureBtn");
-  const saveBtn = document.getElementById("saveBtn");
   const video = document.getElementById("video");
   const canvas = document.getElementById("canvas");
   const statusEl = document.getElementById("status");
@@ -14,15 +11,18 @@ window.addEventListener("DOMContentLoaded", () => {
   const galleryStatusEl = document.getElementById("galleryStatus");
   const photoTableBody = document.getElementById("photoTableBody");
 
-  // Upload controls
+  // Upload controls (match HTML IDs)
   const dropZone = document.getElementById("dropZone");
-  const fileInput = document.getElementById("fileInput");
-  const choosePhotoBtn = document.getElementById("choosePhotoBtn");
+  const fileInput = document.getElementById("deviceInput");
+  const chooseFromDeviceBtn = document.getElementById("chooseFromDeviceBtn");
+
+  // Single merged button
+  const cameraActionBtn = document.getElementById("cameraActionBtn");
 
   // Tag overlay element (for ROI)
   const tagOutline = document.querySelector(".tag-outline");
 
-  // Hidden raw canvas
+  // Hidden raw canvas (full original)
   const rawCanvas = document.createElement("canvas");
   const rawCtx = rawCanvas.getContext("2d");
 
@@ -34,7 +34,6 @@ window.addEventListener("DOMContentLoaded", () => {
   // Max preview / save dimension
   const MAX_SIZE = 1600;
 
-  // Extra: make sure video is inline on iOS Safari
   if (video) {
     video.setAttribute("playsinline", "true");
   }
@@ -67,31 +66,26 @@ window.addEventListener("DOMContentLoaded", () => {
   /* ---------- Nav tabs ---------- */
 
   function showCaptureView() {
-    if (navCapture) navCapture.classList.add("active");
-    if (navGallery) navGallery.classList.remove("active");
+    navCapture?.classList.add("active");
+    navGallery?.classList.remove("active");
     if (captureView) captureView.style.display = "";
     if (galleryView) galleryView.style.display = "none";
   }
 
   function showGalleryView() {
-    if (navCapture) navCapture.classList.remove("active");
-    if (navGallery) navGallery.classList.add("active");
+    navCapture?.classList.remove("active");
+    navGallery?.classList.add("active");
     if (captureView) captureView.style.display = "none";
     if (galleryView) galleryView.style.display = "";
     loadGallery();
   }
 
-  if (navCapture) {
-    navCapture.addEventListener("click", showCaptureView);
-  }
-  if (navGallery) {
-    navGallery.addEventListener("click", showGalleryView);
-  }
+  navCapture?.addEventListener("click", showCaptureView);
+  navGallery?.addEventListener("click", showGalleryView);
 
   /* ---------- Camera / capture ---------- */
 
   async function startCamera() {
-    // Defensive check: is camera API available?
     if (
       !navigator.mediaDevices ||
       typeof navigator.mediaDevices.getUserMedia !== "function"
@@ -100,7 +94,7 @@ window.addEventListener("DOMContentLoaded", () => {
         "Camera access is not supported in this browser / context.",
         "error"
       );
-      return;
+      return false;
     }
 
     try {
@@ -123,11 +117,11 @@ window.addEventListener("DOMContentLoaded", () => {
         video.play().catch(() => {});
       }
 
-      if (captureBtn) captureBtn.disabled = false;
       setStatus(
-        "Camera started. Align tag inside outline and tap Capture.",
+        "Camera started. Align tag inside outline, then tap the button to capture & save.",
         "success"
       );
+      return true;
     } catch (err) {
       console.error("Camera error:", err);
       if (
@@ -146,12 +140,13 @@ window.addEventListener("DOMContentLoaded", () => {
       } else {
         setStatus("Unable to access camera: " + err.message, "error");
       }
+      return false;
     }
   }
 
   function captureFrame() {
     if (!stream) {
-      setStatus("Camera is not running. Tap Start Camera first.", "error");
+      setStatus("Camera is not running. Tap the button to start it first.", "error");
       return false;
     }
 
@@ -163,7 +158,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const width = video.videoWidth;
     const height = video.videoHeight;
     if (!width || !height) {
-      setStatus("Camera is still initializing. Try Capture again.", "error");
+      setStatus("Camera is still initializing. Try capture again.", "error");
       return false;
     }
 
@@ -172,8 +167,6 @@ window.addEventListener("DOMContentLoaded", () => {
     rawCtx.drawImage(video, 0, 0, width, height);
 
     hasCapture = true;
-    if (saveBtn) saveBtn.disabled = false;
-
     runDeskewOrFallback();
     return true;
   }
@@ -194,9 +187,11 @@ window.addEventListener("DOMContentLoaded", () => {
         rawCanvas.height = img.height;
         rawCtx.drawImage(img, 0, 0);
         hasCapture = true;
-        if (saveBtn) saveBtn.disabled = false;
         runDeskewOrFallback();
-        setStatus("Image loaded from device and processed.", "success");
+        setStatus(
+          "Image loaded from device and processed. Tap the button to save.",
+          "success"
+        );
       };
       img.onerror = () => setStatus("Failed to load image.", "error");
       img.src = reader.result;
@@ -205,35 +200,29 @@ window.addEventListener("DOMContentLoaded", () => {
     reader.readAsDataURL(file);
   }
 
-  if (choosePhotoBtn) {
-    choosePhotoBtn.addEventListener("click", () => fileInput && fileInput.click());
-  }
+  chooseFromDeviceBtn?.addEventListener("click", () => fileInput?.click());
 
-  if (fileInput) {
-    fileInput.addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      if (file) loadImageFile(file);
-    });
-  }
+  fileInput?.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) loadImageFile(file);
+  });
 
-  if (dropZone) {
-    dropZone.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "copy";
-      dropZone.classList.add("drag-over");
-    });
+  dropZone?.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    dropZone.classList.add("drag-over");
+  });
 
-    dropZone.addEventListener("dragleave", () => {
-      dropZone.classList.remove("drag-over");
-    });
+  dropZone?.addEventListener("dragleave", () => {
+    dropZone.classList.remove("drag-over");
+  });
 
-    dropZone.addEventListener("drop", (e) => {
-      e.preventDefault();
-      dropZone.classList.remove("drag-over");
-      const file = e.dataTransfer.files[0];
-      if (file) loadImageFile(file);
-    });
-  }
+  dropZone?.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropZone.classList.remove("drag-over");
+    const file = e.dataTransfer.files[0];
+    if (file) loadImageFile(file);
+  });
 
   /* ---------- DESKEW / PREVIEW ---------- */
 
@@ -270,7 +259,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  /* Simple fallback: just copy raw image into preview canvas */
   function basicCopyToPreview() {
     const srcW = rawCanvas.width;
     const srcH = rawCanvas.height;
@@ -291,8 +279,6 @@ window.addEventListener("DOMContentLoaded", () => {
     ctx.clearRect(0, 0, destW, destH);
     ctx.drawImage(rawCanvas, 0, 0, destW, destH);
   }
-
-  /* --- Helper: compute ROI from tag overlay --- */
 
   function computeTagRoiRect() {
     if (!tagOutline || !video || !video.videoWidth || !video.videoHeight) {
@@ -332,8 +318,6 @@ window.addEventListener("DOMContentLoaded", () => {
     return Math.sqrt(dx * dx + dy * dy);
   }
 
-  /* --- OpenCV-based automatic perspective correction & grayscale --- */
-
   function autoDeskewWithOpenCV() {
     if (!cvReady || !window.cv) {
       return false;
@@ -341,7 +325,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const src = cv.imread(rawCanvas);
 
-    // Restrict to overlay region for more reliable detection
     const roiRect = computeTagRoiRect();
     let roi = src;
     let roiIsSub = false;
@@ -365,31 +348,23 @@ window.addEventListener("DOMContentLoaded", () => {
     let warpedGray = null;
     let success = false;
 
-    // helper: crop with margins to tighten framing
     function cropWithMargin(mat) {
       const w = mat.cols;
       const h = mat.rows;
+      if (w <= 40 || h <= 40) return mat;
 
-      if (w <= 40 || h <= 40) {
-        // too small to crop meaningfully
-        return mat;
-      }
-
-      const marginX = Math.round(w * 0.05); // 5% each side
-      const marginY = Math.round(h * 0.08); // 8% top/bottom
+      const marginX = Math.round(w * 0.05);
+      const marginY = Math.round(h * 0.08);
       const cropW = Math.max(10, w - 2 * marginX);
       const cropH = Math.max(10, h - 2 * marginY);
-
       const rect = new cv.Rect(marginX, marginY, cropW, cropH);
       return mat.roi(rect);
     }
 
-    // helper: show grayscale ROI (no perspective warp) if we don't trust the contour
     function showGrayscaleRoi() {
       const previewGray = new cv.Mat();
       cv.cvtColor(roi, previewGray, cv.COLOR_RGBA2GRAY, 0);
 
-      // scale to MAX_SIZE but keep aspect
       let w = previewGray.cols;
       let h = previewGray.rows;
       const longSide = Math.max(w, h);
@@ -410,7 +385,6 @@ window.addEventListener("DOMContentLoaded", () => {
         cv.INTER_AREA
       );
 
-      // crop a bit to tighten framing
       let cropMat = cropWithMargin(resized);
 
       canvas.width = cropMat.cols;
@@ -423,7 +397,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      // 1) Edge detection in ROI
       cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY, 0);
       cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
       cv.Canny(blur, edges, 50, 150);
@@ -441,7 +414,6 @@ window.addEventListener("DOMContentLoaded", () => {
         return false;
       }
 
-      // 2) Pick largest contour
       let bestIdx = 0;
       let bestArea = 0;
       for (let i = 0; i < contours.size(); i++) {
@@ -453,24 +425,19 @@ window.addEventListener("DOMContentLoaded", () => {
         }
       }
 
-      // If the largest contour is tiny vs. the overlay area, it's probably
-      // just the hole or a bit of text — not the full tag. Fall back.
       if (bestArea < roiArea * 0.25) {
-        // less than 25% of ROI area → don't trust it
         showGrayscaleRoi();
         return false;
       }
 
       const bestContour = contours.get(bestIdx);
 
-      // 3) Minimum-area rectangle around that contour
       const rotatedRect = cv.minAreaRect(bestContour);
-      const box = cv.RotatedRect.points(rotatedRect); // 4 cv.Point
+      const box = cv.RotatedRect.points(rotatedRect);
 
-      // 4) Order corners: tl, tr, br, bl
       let pts = box.map((p) => ({ x: p.x, y: p.y }));
 
-      pts.sort((a, b) => a.y - b.y); // top 2, bottom 2
+      pts.sort((a, b) => a.y - b.y);
       const top = pts.slice(0, 2);
       const bottom = pts.slice(2, 4);
       top.sort((a, b) => a.x - b.x);
@@ -481,7 +448,6 @@ window.addEventListener("DOMContentLoaded", () => {
       const bl = bottom[0];
       const br = bottom[1];
 
-      // 5) Compute target width/height
       const widthA = distance(br, bl);
       const widthB = distance(tr, tl);
       let maxWidth = Math.max(widthA, widthB);
@@ -495,16 +461,14 @@ window.addEventListener("DOMContentLoaded", () => {
         return false;
       }
 
-      // If the warped size would be much smaller than the ROI, it's probably wrong
       if (
-        maxWidth < roiWidth * 0.4 || // less than 40% of ROI width
-        maxHeight < roiHeight * 0.4   // or height
+        maxWidth < roiWidth * 0.4 ||
+        maxHeight < roiHeight * 0.4
       ) {
         showGrayscaleRoi();
         return false;
       }
 
-      // 6) Limit size to MAX_SIZE
       const longSide = Math.max(maxWidth, maxHeight);
       let scale = 1;
       if (longSide > MAX_SIZE) {
@@ -531,11 +495,9 @@ window.addEventListener("DOMContentLoaded", () => {
       warped = new cv.Mat();
       cv.warpPerspective(roi, warped, M, new cv.Size(dstW, dstH));
 
-      // 7) Convert warped to grayscale
       warpedGray = new cv.Mat();
       cv.cvtColor(warped, warpedGray, cv.COLOR_RGBA2GRAY, 0);
 
-      // 8) Crop a small margin to tighten framing around the tag
       let cropMat = cropWithMargin(warpedGray);
 
       canvas.width = cropMat.cols;
@@ -547,7 +509,6 @@ window.addEventListener("DOMContentLoaded", () => {
       M.delete();
       srcPts.delete();
       dstPts.delete();
-
       if (cropMat !== warpedGray) cropMat.delete();
     } finally {
       if (roiIsSub && roi) roi.delete();
@@ -682,7 +643,7 @@ window.addEventListener("DOMContentLoaded", () => {
         corrTd.appendChild(corrSize);
         tr.appendChild(corrTd);
 
-        if (photoTableBody) photoTableBody.appendChild(tr);
+        photoTableBody?.appendChild(tr);
       }
 
       setGalleryStatus(`Loaded ${items.length} photo set(s).`, "success");
@@ -692,32 +653,34 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  /* ---------- Event wiring ---------- */
+  /* ---------- Single merged button behavior ---------- */
 
-  if (startCameraBtn) {
-    startCameraBtn.addEventListener("click", () => {
-      setStatus("Starting camera...");
-      startCamera();
-    });
-  } else {
-    console.error("startCameraBtn not found in DOM.");
-  }
+  cameraActionBtn?.addEventListener("click", async () => {
+    // Case 1: no camera stream yet
+    if (!stream) {
+      if (!hasCapture) {
+        // Start camera
+        setStatus("Starting camera...");
+        const ok = await startCamera();
+        if (ok && cameraActionBtn) {
+          cameraActionBtn.textContent = "Capture & Save";
+        }
+      } else {
+        // Have a processed upload, just save it
+        await savePhoto();
+      }
+      return;
+    }
 
-  if (captureBtn) {
-    captureBtn.addEventListener("click", () => {
-      captureFrame();
-    });
-  }
+    // Case 2: camera is running → capture + process + save
+    const ok = captureFrame();
+    if (ok) {
+      await savePhoto();
+    }
+  });
 
-  if (saveBtn) {
-    saveBtn.addEventListener("click", () => {
-      savePhoto();
-    });
-  }
-
-  if (refreshGalleryBtn) {
-    refreshGalleryBtn.addEventListener("click", loadGallery);
-  }
+  refreshingGalleryBtn?.addEventListener?.("click", loadGallery);
+  refreshGalleryBtn?.addEventListener("click", loadGallery);
 
   // Default to Capture tab on load
   showCaptureView();
