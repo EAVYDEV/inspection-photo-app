@@ -23,6 +23,7 @@ let stream = null;
 let hasCapture = false;
 let cvReady = false;
 
+// Limit longest side (preview + saved) so files stay small
 const MAX_SIZE = 1600;
 
 // Offscreen raw capture canvas
@@ -222,7 +223,8 @@ function updateBlobs(callback) {
   );
 }
 
-// Core: find tag and warp so it looks straight-on
+// Core: find tag and warp so it looks straight-on,
+// but pad the detected rectangle so it doesn’t look zoomed in.
 function runDeskewOrFallback() {
   if (!cvReady || !window.cv) {
     basicCopyToPreview();
@@ -293,9 +295,6 @@ function runDeskewOrFallback() {
       cnt.delete();
     }
 
-    // default to original gray
-    let outputMat = gray;
-
     if (best && bestArea > 0) {
       // Extract 4 corner points correctly from approx.data32S
       const pts = [];
@@ -307,11 +306,30 @@ function runDeskewOrFallback() {
       if (pts.length === 4) {
         // sort by y (top to bottom), then x
         pts.sort((a, b) => a.y - b.y);
-        const top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
-        const bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
+        let top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
+        let bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
 
-        const [tl, tr] = top;
-        const [bl, br] = bottom;
+        let [tl, tr] = top;
+        let [bl, br] = bottom;
+
+        // ---- PAD THE RECTANGLE OUTWARD TO AVOID ZOOMED-IN CROP ----
+        const cx = (tl.x + tr.x + bl.x + br.x) / 4;
+        const cy = (tl.y + tr.y + bl.y + br.y) / 4;
+        const padFactor = 1.08; // 8% outward in all directions
+
+        function padPoint(p) {
+          const px = cx + (p.x - cx) * padFactor;
+          const py = cy + (p.y - cy) * padFactor;
+          return {
+            x: Math.max(0, Math.min(frameW - 1, px)),
+            y: Math.max(0, Math.min(frameH - 1, py))
+          };
+        }
+
+        tl = padPoint(tl);
+        tr = padPoint(tr);
+        bl = padPoint(bl);
+        br = padPoint(br);
 
         const widthTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
         const widthBottom = Math.hypot(br.x - bl.x, br.y - bl.y);
@@ -385,7 +403,7 @@ function runDeskewOrFallback() {
     updateBlobs(() => {
       if (usedPerspective) {
         setStatus(
-          "Captured and auto-straightened. Tag is now aligned like a straight-on shot."
+          "Captured and auto-straightened with margin so the whole tag is visible."
         );
       } else {
         setStatus(
@@ -461,7 +479,7 @@ function loadImageFile(file) {
 dropZone.addEventListener("drop", (e) => {
   const file = e.dataTransfer.files[0];
   if (file) {
-  loadImageFile(file);
+    loadImageFile(file);
   }
 });
 
